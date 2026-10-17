@@ -139,15 +139,15 @@ static const config configuration_table[10] = {
  */
 
 /* Literal-run acceleration per level: misses before it starts, the ramp shift
- * (the skip grows by one position every 1 << shift further misses), and whether
- * skipped positions are still inserted into the hash (0: no, 1: all, 2: every
- * other). Higher levels start later, ramp more slowly and keep hashing to
- * protect their ratio; see deflate_p.h.
+ * (the skip grows by one position every 1 << shift further misses), the hash
+ * insertion stride for skipped positions and for stored stretches (0: none,
+ * 1: all, k: every k-th). Higher levels start later, ramp more slowly and keep
+ * hashing to protect their ratio; see deflate_p.h.
  */
 #ifndef SKIP_TABLE
-#  define SKIP_TABLE {{0,0,0},{64,4,1},{64,4,0},{64,4,0},{64,4,0},{128,5,2},{128,5,2},{256,5,1},{256,5,1},{512,5,1}}
+#  define SKIP_TABLE {{0,0,0,0},{64,4,1,0},{64,4,2,4},{64,4,2,4},{64,4,2,4},{128,5,2,4},{128,5,2,4},{256,5,1,2},{256,5,1,2},{512,5,1,2}}
 #endif
-static const struct { uint32_t start, shift, insert; } skip_table[10] = SKIP_TABLE;
+static const struct { uint32_t start, shift, insert, stored_insert; } skip_table[10] = SKIP_TABLE;
 
 /* Level 1 uses deflate_quick, which only reads the hash chain head, so it can
  * skip prev maintenance. When quick is compiled out level 1 falls back to
@@ -1227,6 +1227,7 @@ static void lm_set_level(deflate_state *s, int level) {
     s->skip_start = skip_table[level].start;
     s->skip_shift = skip_table[level].shift;
     s->skip_insert = skip_table[level].insert;
+    s->stored_insert = skip_table[level].stored_insert;
 }
 
 /* ===========================================================================
@@ -1252,6 +1253,8 @@ static void lm_init(deflate_state *s) {
     s->match_start = 0;
     s->ins_h = 0;
     s->miss_run = 0;
+    s->last_block_stored = 0;
+    s->stored_run = 0;
 }
 
 /* ===========================================================================
@@ -1264,6 +1267,111 @@ static void lm_init(deflate_state *s) {
  *    performed for at least two bytes (required for the zip translate_eol
  *    option -- not supported here).
  */
+
+/* ===========================================================================
+ * Stored-block mode for the hashing strategies. Called from the literal-run
+ * acceleration once STORED_MODE_MISSES consecutive positions found nothing.
+ * The evidence that the input is incompressible comes from the block coder
+ * itself: the stretch is only stored when the last block zng_tr_flush_block
+ * coded came out as a stored block, and at most STORED_VERIFY_EVERY bytes are
+ * stored before a coded block has to confirm that again. A stored stretch
+ * is both faster and smaller than coding it literal by literal.
+ *
+ * The caller has tallied every symbol below strstart, holds no lazy match,
+ * and has written strstart, lookahead and sym_next into the state.
+ */
+void Z_INTERNAL zng_deflate_insert_stride(deflate_state *s, unsigned char *window, uint32_t start, uint32_t n, uint32_t stride) {
+    Pos *head = s->head;
+    Pos *prev = s->prev;
+    const uint32_t w_mask = W_MASK(s);
+    if (n < STD_MIN_MATCH)
+        return;
+    if (s->level >= MIN_ROLL_LEVEL) {
+        for (uint32_t pos = start; pos + STD_MIN_MATCH <= start + n; pos += stride) {
+            uint32_t h = update_hash_roll(update_hash_roll(window[pos], window[pos + 1]), window[pos + 2]);
+            uint32_t hh = head[h];
+            if (hh != pos) {
+                prev[pos & w_mask] = (Pos)hh;
+                head[h] = (Pos)pos;
+            }
+        }
+    } else {
+        for (uint32_t pos = start; pos + WANT_MIN_MATCH <= start + n; pos += stride) {
+            uint32_t val = Z_U32_FROM_LE(zng_memread_4(window + pos));
+            uint32_t h, hh;
+            UPDATE_HASH_KNUTH(h, val);
+            hh = head[h];
+            if (hh != pos) {
+                prev[pos & w_mask] = (Pos)hh;
+                head[h] = (Pos)pos;
+            }
+        }
+    }
+}
+
+int32_t Z_INTERNAL zng_deflate_try_stored(deflate_state *s, uint32_t miss_run) {
+    unsigned char *window = s->window;
+    uint32_t strstart = s->strstart;
+    uint32_t total = 0;
+
+    /* Without evidence, the block coder decides at its own pace: the current
+     * block is coded with full hashing (see SKIP_STEP) and its outcome at the
+     * next regular flush is the evidence. With evidence, the current block goes
+     * out first however small it is, since stored data must follow it. */
+    Z_UNUSED(miss_run);
+    if (!s->last_block_stored)
+        return 0;
+    if (s->sym_next) {
+        int block_start = s->block_start;
+        zng_tr_flush_block(s, (block_start >= 0 ? &window[(unsigned)block_start] : NULL),
+                           (uint32_t)((int)strstart - block_start), 0);
+        s->block_start = (int)strstart;
+    }
+    PREFIX(flush_pending)(s->strm);
+    if (s->pending != 0)
+        return -1;      /* output full: pending_out has advanced, nothing may be appended */
+    if (!s->last_block_stored)
+        return 0;       /* no evidence yet, or the coder beat a stored block */
+
+    /* Store back to back until the evidence has to be refreshed or the window
+     * runs low; one call covers the whole available stretch so that no tiny
+     * coded block is emitted between consecutive stored blocks. */
+    while (s->stored_run < STORED_VERIFY_EVERY && s->lookahead > MIN_LOOKAHEAD + STORED_CHUNK_MIN) {
+        uint32_t n = MIN(s->lookahead - MIN_LOOKAHEAD, (uint32_t)MAX_STORED);
+        uint32_t room = s->pending_buf_size - s->pending;
+        if (n + 16 > room)
+            n = room > 16 ? room - 16 : 0;
+        if (n < STORED_CHUNK_MIN)
+            break;
+#ifdef ZNG_DEBUG_BLOCKS
+        fprintf(stderr, "stored chunk: n=%u abs=%lu run=%u\n", n, (unsigned long)(s->strm->total_in - s->lookahead), s->stored_run);
+#endif
+        zng_tr_stored_block(s, window + strstart, n, 0);
+        /* Keep the dictionary roughly aware of the stretch */
+        zng_deflate_insert_stride(s, window, strstart, n, s->stored_insert);
+        strstart += n;
+        total += n;
+        s->block_start = (int)strstart;
+        s->strstart = strstart;
+        s->lookahead -= n;
+        s->stored_run += n;
+        if (s->level >= MIN_ROLL_LEVEL) {
+            /* Re-seed the rolling hash for the position after the stored stretch */
+            s->ins_h = update_hash_roll(window[strstart], window[strstart + 1]);
+        }
+        PREFIX(flush_pending)(s->strm);
+        /* The symbol buffer overlays the pending buffer, so the caller may only
+         * continue once the output has been drained */
+        if (s->pending != 0)
+            return -1;
+    }
+    if (s->stored_run >= STORED_VERIFY_EVERY) {
+        /* Time for the coder to confirm with a fully hashed block */
+        s->last_block_stored = 0;
+        s->stored_run = 0;
+    }
+    return (int32_t)total;
+}
 
 void Z_INTERNAL PREFIX(fill_window)(deflate_state *s) {
     PREFIX3(stream) *strm = s->strm;

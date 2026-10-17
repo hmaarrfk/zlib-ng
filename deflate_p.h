@@ -69,9 +69,67 @@ Z_INTERNAL void PREFIX(flush_pending)(PREFIX3(stream) *strm);
  * at most this many are held back. */
 #define PEND_MAX   64
 
-/* Number of positions to emit as literals without searching, given the miss count */
-#define SKIP_STEP(miss_run, skip_start, skip_shift) \
-    (((miss_run) > (skip_start)) ? MIN(((miss_run) - (skip_start)) >> (skip_shift), (uint32_t)SKIP_MAX) : 0u)
+/* Stored-block mode: once this many consecutive positions found no match, a
+ * stretch of the input is probed and, if it looks incompressible, copied as a
+ * stored block instead of being coded literal by literal. */
+#define STORED_MODE_MISSES 512
+#define STORED_CHUNK_MIN   1024
+#define STORED_CHUNK_MAX   8192     /* deflate_quick only; the others use MAX_STORED */
+/* The hashing strategies store at most this many bytes before a regular,
+ * fully hashed coded block has to confirm that the input is still
+ * incompressible */
+#define STORED_VERIFY_EVERY (512 * 1024)
+/* deflate_quick has no block coder to ask, so it probes: one lookup every
+ * PROBE_STRIDE bytes, and the stretch is stored when fewer than one probe in
+ * STORED_MAX_HITS finds a match */
+#define PROBE_STRIDE       16
+#define STORED_MAX_HITS    64
+
+/* Try to emit the stretch at s->strstart as a stored block, see deflate.c.
+ * Returns the number of bytes stored, 0 when the stretch is compressible, or
+ * -1 when the output buffer is full and the caller must return need_more
+ * (the state already reflects whatever was stored). */
+int32_t Z_INTERNAL zng_deflate_try_stored(deflate_state *s, uint32_t miss_run);
+
+/* Number of positions to emit as literals without searching, given the miss
+ * count. Past STORED_MODE_MISSES the skip stays off until the block coder has
+ * delivered evidence, so that the evidence block is coded with full hashing
+ * (a block coded under the skip finds few matches and would look
+ * incompressible even when it is not). */
+#define SKIP_STEP(s, miss_run, skip_start) \
+    (((miss_run) > (skip_start) && ((miss_run) < STORED_MODE_MISSES || (s)->last_block_stored)) ? \
+        MIN(((miss_run) - (skip_start)) >> (s)->skip_shift, (uint32_t)SKIP_MAX) : 0u)
+/* deflate_quick probes instead of asking the block coder, so it is not gated */
+#define SKIP_STEP_QUICK(s, miss_run, skip_start) \
+    (((miss_run) > (skip_start)) ? MIN(((miss_run) - (skip_start)) >> (s)->skip_shift, (uint32_t)SKIP_MAX) : 0u)
+
+/* A match ends the run */
+#define SKIP_HIT(miss_run) ((miss_run) = 0)
+
+/* Hash every stride-th position of a stretch that the strategy does not
+ * search (skipped or stored), so that later matches can still point into it;
+ * a match that starts between two hashed positions is recovered by the
+ * backward growth over pending literals. stride 0 hashes nothing. */
+void Z_INTERNAL zng_deflate_insert_stride(deflate_state *s, unsigned char *window, uint32_t start, uint32_t n, uint32_t stride);
+
+#define SKIP_INSERT_KNUTH(s, window, pos, n, stride) do { \
+        if ((stride) == 1) \
+            insert_knuth_batch_static(s, window, pos, n); \
+        else if (stride) \
+            zng_deflate_insert_stride(s, window, pos, n, stride); \
+    } while (0)
+
+/* Number of positions to emit as literals without searching, given the miss
+ * count. Past STORED_MODE_MISSES the skip stays off until the block coder has
+ * delivered evidence, so that the evidence block is coded with full hashing
+ * (a block coded under the skip finds few matches and would look
+ * incompressible even when it is not). */
+#define SKIP_STEP(s, miss_run, skip_start) \
+    (((miss_run) > (skip_start) && ((miss_run) < STORED_MODE_MISSES || (s)->last_block_stored)) ? \
+        MIN(((miss_run) - (skip_start)) >> (s)->skip_shift, (uint32_t)SKIP_MAX) : 0u)
+/* deflate_quick probes instead of asking the block coder, so it is not gated */
+#define SKIP_STEP_QUICK(s, miss_run, skip_start) \
+    (((miss_run) > (skip_start)) ? MIN(((miss_run) - (skip_start)) >> (s)->skip_shift, (uint32_t)SKIP_MAX) : 0u)
 
 /* A match ends the run */
 #define SKIP_HIT(miss_run) ((miss_run) = 0)
@@ -79,14 +137,6 @@ Z_INTERNAL void PREFIX(flush_pending)(PREFIX3(stream) *strm);
 /* Hash the positions skipped by the acceleration according to the level's
  * insert policy, so that later matches can still point into the skipped run.
  * The knuth variant is for levels below MIN_ROLL_LEVEL. */
-#define SKIP_INSERT_KNUTH(s, window, pos, n, policy) do { \
-        if ((policy) == 1) { \
-            insert_knuth_batch_static(s, window, pos, n); \
-        } else if ((policy) == 2) { \
-            for (uint32_t i_ = 0; i_ < (n); i_ += 2) \
-                insert_knuth(s, window, (pos) + i_); \
-        } \
-    } while (0)
 
 /* Number of symbols that still fit in the symbol buffer, and the buffer bytes
  * that n symbols take */

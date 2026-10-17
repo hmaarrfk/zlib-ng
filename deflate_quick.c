@@ -51,7 +51,6 @@ Z_FORCEINLINE static int quick_end_block(deflate_state *s, uint32_t strstart, in
  * positions that found a 4-byte match. The probed positions are inserted
  * into the hash so the stretch is not entirely absent from the dictionary.
  */
-#define PROBE_STRIDE 16
 static uint32_t quick_probe(deflate_state *s, const unsigned char *window, uint32_t start, uint32_t len) {
     uint32_t hits = 0;
     uint32_t max_dist = MAX_DIST(s);
@@ -65,14 +64,6 @@ static uint32_t quick_probe(deflate_state *s, const unsigned char *window, uint3
     return hits;
 }
 
-/* Stored-block mode: once this many consecutive positions found no match, a
- * stretch of the input is probed and, if it looks incompressible, copied as a
- * stored block instead of being coded literal by literal. */
-#define STORED_MODE_MISSES 512
-#define STORED_CHUNK_MIN   1024
-#define STORED_CHUNK_MAX   8192
-/* A stretch is stored when fewer than one probe in STORED_MAX_HITS finds a match */
-#define STORED_MAX_HITS    64
 
 /* The block opened on a Z_FINISH call is marked final only when the remaining
  * input is too small for stored-block mode to ever want to close it again.
@@ -171,7 +162,7 @@ Z_FORCEINLINE static block_state deflate_quick_impl(deflate_state *s, int flush,
          * searched; past STORED_MODE_MISSES, a probed stretch that still looks
          * incompressible is copied as a stored block, which is both faster and
          * smaller than static-tree literals. */
-        uint32_t skip = SKIP_STEP(++miss_run, skip_start, s->skip_shift);
+        uint32_t skip = SKIP_STEP_QUICK(s, ++miss_run, skip_start);
         /* Skipping one or two positions at a time costs more than it saves here */
         if (UNLIKELY(skip >= 4)) {
             if (miss_run >= STORED_MODE_MISSES && lookahead > MIN_LOOKAHEAD + STORED_CHUNK_MIN) {

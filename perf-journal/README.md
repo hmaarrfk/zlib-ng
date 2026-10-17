@@ -135,3 +135,44 @@ efficiency core produced 10-20% swings between identical binaries.
 The quick-tier geomeans do not show this step because the suite only runs
 levels 2-9 on the non-text data types; the "deflate L1-3" family is
 unchanged at 1.50x.
+
+### 004 stored-block mode for levels 2-9 (FAILED, rolled back in 005)
+
+Attempt to extend the level 1 stored-block idea to the hashing strategies:
+once the literal-run skip had seen 512 misses, flush the current block and
+emit the next stretch as stored blocks. Five variants were tried for the
+"is this stretch incompressible" decision:
+
+1. A read-only hash probe every 16 bytes (as level 1 does). Wrong on data
+   whose matches are short-distance: the probe cannot see them because the
+   skipped positions were never hashed, so x-ray at level 2 was stored in
+   its entirety (ratio 1.34 -> 1.00).
+2. Trust the block coder: store only after the last coded block came out as
+   a stored block, re-verify every 64-512 KiB. Small evidence blocks
+   (1-4K symbols) are biased towards "stored" because the dynamic tree
+   overhead is a larger share of a small block, so samba, whose middle
+   megabyte compresses only 1.14x, lost 1.3-4%; mozilla lost 2-4%.
+3. Same, but hold the skip off while the evidence block is coded so that it
+   is fully hashed. Did not help: the dictionary was still missing the
+   stored stretches, so the coder found no matches and said "stored".
+4. Hash every 4th position of stored stretches. Recovered some, not enough.
+5. Only full-size (16K symbol) blocks as evidence. Same losses, and the speed
+   advantage over the plain skip shrank to little (random 1.1-1.9 GB/s vs.
+   1.5-2.5 with the skip alone at levels 2-6).
+
+Root cause: the block coder already converts incompressible blocks to stored
+blocks after the fact, with the dynamic tree still winning on data whose
+byte entropy is below ~7.95 bits (samba's binary middle is 7.79 bits and
+compresses 1.14x). Deciding before coding cannot see that, and keeping the
+dictionary consistent through stored stretches costs about as much as coding
+the literals. The stretch also made difftest crawl for 40 CPU minutes on
+memLevel 1 streams (512 byte pending buffer: every literal flushed a one
+symbol block).
+
+Measured anyway (quick tier, clean run): deflate L1-3 1.46x, L6-9 1.30x,
+strategies 1.12x, "inflate" 0.91x. The inflate change is an artifact: the
+inflate benchmark decompresses what this build's level 9 produced, which now
+contains stored blocks. The ratio losses above are from tune.c, not from the
+benchmark suite, which has no ratio gate. Rolled back in the next step; level
+1 keeps its stored mode, which has no dynamic-tree alternative and was
+measured as a gain on every file.
