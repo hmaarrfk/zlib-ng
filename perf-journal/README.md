@@ -526,3 +526,21 @@ call to build a random-access index would be off by up to a window. The
 known indexers (zran, gztool, indexed_gzip) use Z_BLOCK, which decodes
 directly. `inflateSetDictionary` with pending output now returns
 Z_STREAM_ERROR rather than placing the dictionary behind undelivered bytes.
+
+Benchmark-suite measurement of the two steps (`results/012-inflate-in-window.json`,
+`results/013-inflate-read-ahead.json`, both quick tier) with the baseline
+commit measured right after them (`results/013b-baseline-rerun.json`,
+`plots/paired-013-inflate-read-ahead.png`). The `inflate_chunked` family
+decodes 256 KiB of synthetic text (level 9) with a fixed output buffer:
+
+| output buffer | 64 B | 128 B | 256 B | 512 B | 1 KiB | 2 KiB | 4 KiB | 16 KiB | 64 KiB+ |
+|---|---|---|---|---|---|---|---|---|---|
+| 012 bounded | 1.40x | 1.64x | 1.78x | 1.24x | 1.24x | 1.08x | 0.96x | 0.98x | 1.00x |
+| 013 read-ahead | 2.71x | 2.49x | 2.43x | 1.58x | 1.50x | 1.24x | 1.09x | 1.03x | 1.00x |
+
+Whole-buffer inflate is unchanged (geomean 0.996x over the eight 1 MiB
+inputs, 1.05x over the 16 KiB ones). `uncompress()` of a single byte is
+7 ns slower (88 -> 95 ns): the entry now checks for pending output and
+the one-byte call takes the in-window path. The deflate families moved
+within the run-to-run noise (compress 0.98x, deflate text 1.01x); deflate
+code did not change in these steps.
