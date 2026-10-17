@@ -340,3 +340,69 @@ ratio changes above 0.3% are levels 2-3 on the noisy RGB image (-1.4%),
 x-ray (-1.9%) and geo (-1.2%), all input where the literal-run skip fires on
 data that still has sparse short matches; level 1 on incompressible input
 gains 5% because it now emits stored blocks.
+
+## Decompression
+
+The second mission on this branch is inflate. Unlike deflate, the output is
+fixed byte for byte, so there is no "different valid stream" lever; the only
+levers are cycles per symbol in the decoder and the overhead around it.
+
+### 011 inflate profile (measurement only)
+
+`patches/inflate-profile.patch` adds timers to `inflate()` (fast loop, safe
+fast loop, code-length decoding, table building, window update, rest) and
+symbol counters to the fast loop, both under ifdefs; `infprof.c` compresses a
+file at a level, inflates it with chosen input/output chunk sizes (best of
+5) and prints the split. Full output: `results/011-inflate-profile.txt`.
+Level 9 raw streams unless noted.
+
+Whole-buffer inflate, where the time goes:
+
+| input | MB/s | fast loop | code lengths + tables | other |
+|---|---|---|---|---|
+| dickens | 1374 | 97.9% | 2.0% | 0.1% |
+| mozilla (838 blocks) | 1121 | 96.1% | 3.8% | 0.1% |
+| sao (256 blocks, 81% literals) | 711 | 94.8% | 5.2% | 0.1% |
+| nci | 3965 | 98.4% | 1.5% | 0.1% |
+| synthetic text | 1913 | 98.2% | 1.5% | 0.4% |
+
+The zlib wrapper (adler32 at the end) costs 1-5%, gzip (crc32) 1-4%. Level 1
+streams decode at about the same speed as level 9 streams (fewer, shorter
+matches, more literals); level 1 random bytes decode at 6-18 GB/s because
+the stream is stored blocks, i.e. memcpy.
+
+Symbol mix (level 9): literals are 26% (dickens) to 81% (sao) of symbols,
+average match length 3.5 (x-ray) to 34 (nci), second-level table lookups
+0.05-4% of symbols, overlapping copies (dist < len) under 1.5% except on
+JPEG. At 1.1-1.4 GB/s with 3.8-5 bytes per symbol the loop runs at roughly
+11-16 cycles per symbol; a pure-literal stream (the `literals` benchmark
+input) runs at about 7 cycles per literal, which is close to the dependent
+chain table-load -> shift -> next index. The gap on mixed data is the
+literal-vs-match branch, which is data dependent.
+
+Reference point: libdeflate (commit 92e6a0d, built here, same compressed
+bytes, same process, `results/011-libdeflate-reference.txt`) is 0.96x to
+1.18x of zlib-ng's whole-buffer inflate on these files. So the main loop is
+within 20% of the fastest known scalar decoder and that is the ceiling for
+work on it.
+
+Streaming with small output buffers is a different picture. Output chunk
+size vs. throughput, level 9 raw, mozilla / dickens / text:
+
+| output buffer | mozilla | dickens | text | where the time goes (mozilla) |
+|---|---|---|---|---|
+| whole | 1121 | 1374 | 1913 | fast 96% |
+| 64 KiB | 1059 | 1173 | 1683 | fast 95%, window copy 1%, rest 1% |
+| 4 KiB | 846 | 820 | 1219 | fast 86%, safe 8%, window 1%, rest 3% |
+| 512 B | 651 | 583 | 814 | fast 34%, safe 50%, window 3%, rest 10% |
+| 64 B | 365 | 306 | 393 | safe 50%, window 12%, rest 36% |
+
+With a 4 KiB input chunking (output whole) mozilla drops to 899 MB/s: every
+call ends with the last 14 input bytes decoded by the byte-at-a-time state
+machine and a 32 KiB window copy.
+
+Conclusions that set the plan: (1) the whole-buffer loop has at most 10-20%
+in it; (2) small output buffers (libpng rows, HTTP streaming, pipes) lose
+1.3x at 4 KiB and 3x at 64 B to the safe loop, the per-call window copy
+and per-call fixed overhead, and that is where a multi-x win is possible;
+(3) table building is 2-5% on files with many blocks.
