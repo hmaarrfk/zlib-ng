@@ -249,3 +249,13 @@ identical and so did speed: dickens, mozilla, webster and kennedy.xls at
 levels 2, 3, 6, 7 and 9 moved by -1.5% to +2.5%, all within noise. The
 per-call overhead is already hidden by out-of-order execution; the cost is
 the chain walk itself, one L1 load latency per candidate. Reverted.
+
+### 008 level 8: chain limit 1024 -> 512 (kept, changes encoded output)
+
+The counters from the previous finding showed level 8 walking 90 chain
+candidates per input byte on kennedy.xls (14x slower than level 6 for 5%
+better ratio). The deflateTune sweep had already shown chain 512 at level 8
+costs 0.01% on the corpus for 5-6% speed. Applied to the level table:
+corpus 106.7 -> 123.2 MB/s (1.15x) at ratio 2.4862 -> 2.4855 (-0.03%);
+kennedy.xls 27 -> 44 MB/s, mozilla 106 -> 160 MB/s (ratio -0.09%), ptt5
+145 -> 181 MB/s (-0.19%), dickens/webster +4-5% at identical ratio.
