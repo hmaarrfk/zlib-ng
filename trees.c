@@ -680,20 +680,6 @@ void Z_INTERNAL zng_tr_flush_block(deflate_state *s, unsigned char *buf, uint32_
         opt_lenb = static_lenb = stored_len + 5; /* force a stored block */
     }
 
-    /* Remember whether coding lost against storing, for the stored-block mode
-     * in deflate.c. Only full-size blocks count: a small block's tree overhead
-     * tips the decision towards storing on input that a full block would still
-     * code smaller. */
-    if (s->sym_next >= s->sym_end) {
-        s->last_block_stored = (buf != NULL && stored_len+4 <= opt_lenb);
-        s->stored_run = 0;
-    }
-#ifdef ZNG_DEBUG_BLOCKS
-    fprintf(stderr, "block: stored_len=%u syms=%u opt=%u static=%u buf=%s abs_end=%lu -> %s\n",
-            stored_len, s->sym_next/3, opt_lenb, static_lenb, buf ? "ok" : "NULL", (unsigned long)(s->strm->total_in - s->lookahead),
-            (stored_len+4 <= opt_lenb && buf != NULL) ? "STORED" : static_lenb == opt_lenb ? "static" : "dyn");
-#endif
-
     if (stored_len+4 <= opt_lenb && buf != NULL) {
         /* 4: two words for the lengths
          * The test buf != NULL is only necessary if LIT_BUFSIZE > WSIZE.

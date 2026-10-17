@@ -348,12 +348,9 @@ struct ALIGNED_(64) internal_state {
     uint32_t skip_start;        /* misses before the acceleration starts, set by lm_set_level() */
     uint32_t skip_shift;        /* ramp of the acceleration, set by lm_set_level() */
     uint32_t skip_insert;       /* hash every skip_insert-th skipped position (0: none) */
-    uint32_t stored_insert;     /* hash every stored_insert-th position of a stored stretch (0: none) */
-    uint32_t last_block_stored; /* the last coded block came out as a stored block */
-    uint32_t stored_run;        /* bytes emitted by stored-block mode since the last coded block */
 
     /* Reserved for future use and alignment purposes */
-    int32_t reserved[13];
+    int32_t reserved[16];
 };
 
 typedef enum {

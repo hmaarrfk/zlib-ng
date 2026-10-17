@@ -162,7 +162,7 @@ Z_FORCEINLINE static block_state deflate_quick_impl(deflate_state *s, int flush,
          * searched; past STORED_MODE_MISSES, a probed stretch that still looks
          * incompressible is copied as a stored block, which is both faster and
          * smaller than static-tree literals. */
-        uint32_t skip = SKIP_STEP_QUICK(s, ++miss_run, skip_start);
+        uint32_t skip = SKIP_STEP(s, ++miss_run, skip_start);
         /* Skipping one or two positions at a time costs more than it saves here */
         if (UNLIKELY(skip >= 4)) {
             if (miss_run >= STORED_MODE_MISSES && lookahead > MIN_LOOKAHEAD + STORED_CHUNK_MIN) {

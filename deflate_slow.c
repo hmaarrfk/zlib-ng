@@ -217,30 +217,7 @@ accelerate:
              * The symbol buffer has room for at least one symbol here, and must keep
              * room for the pending run plus one more. */
             if (match_len < STD_MIN_MATCH) {
-                /* Stored-block mode, see zng_deflate_try_stored(). The lazy literal at
-                 * strstart-1 is emitted first so nothing is pending; a stored stretch
-                 * leaves no lazy position either. */
-                if (UNLIKELY(++miss_run >= STORED_MODE_MISSES) && lookahead > MIN_LOOKAHEAD + STORED_CHUNK_MIN) {
-                    if (UNLIKELY(pend))
-                        TALLY_PENDING(strstart - 1);
-                    sym_next = zng_tr_tally_lit_at(s, sym_next, window[strstart - 1]);
-                    s->prev_length = 0;
-                    s->match_available = 0;
-                    SYNC_STATE();
-                    int32_t stored = zng_deflate_try_stored(s, miss_run);
-                    if (stored < 0)
-                        return need_more;
-                    LOAD_STATE();
-                    /* With or without a stored stretch, the position at strstart is
-                     * examined fresh next iteration */
-                    if (UNLIKELY(sym_next == sym_end)) {
-                        SYNC_STATE();
-                        FLUSH_BLOCK(s, window, 0);
-                        sym_next = s->sym_next;
-                    }
-                    continue;
-                }
-                uint32_t skip = SKIP_STEP(s, miss_run, skip_start);
+                uint32_t skip = SKIP_STEP(s, ++miss_run, skip_start);
                 if (UNLIKELY(skip)) {
                     uint32_t room = SYM_ROOM(sym_next, sym_end);
                     skip = room > 2 ? MIN(skip, room - 2) : 0;

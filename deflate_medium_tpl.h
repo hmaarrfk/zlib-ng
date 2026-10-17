@@ -314,26 +314,7 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
              * found nothing either, in which case it is part of the run. The symbol
              * buffer always has room for the pending literals plus one more symbol,
              * so the skip is bounded by that room as well. */
-            /* Stored-block mode, see zng_deflate_try_stored() */
-            if (UNLIKELY(++miss_run >= STORED_MODE_MISSES) && lookahead > MIN_LOOKAHEAD + STORED_CHUNK_MIN
-#ifdef USE_FIZZLE
-                && next_match.match_length <= 1
-#endif
-                ) {
-                TALLY_PENDING();
-                SYNC_STATE();
-                int32_t stored = zng_deflate_try_stored(s, miss_run);
-                if (stored < 0)
-                    return need_more;
-                LOAD_STATE();
-                if (stored > 0) {
-#ifdef USE_FIZZLE
-                    next_match.match_length = 0;
-#endif
-                    continue;
-                }
-            }
-            uint32_t skip = SKIP_STEP(s, miss_run, skip_start);
+            uint32_t skip = SKIP_STEP(s, ++miss_run, skip_start);
 #ifdef USE_FIZZLE
             if (UNLIKELY(skip) && next_match.match_length <= 1) {
                 next_match.match_length = 0;

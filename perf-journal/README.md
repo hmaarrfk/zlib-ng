@@ -176,3 +176,18 @@ contains stored blocks. The ratio losses above are from tune.c, not from the
 benchmark suite, which has no ratio gate. Rolled back in the next step; level
 1 keeps its stored mode, which has no dynamic-tree alternative and was
 measured as a gain on every file.
+
+### 005 roll back stored mode for levels 2-9, keep stride hashing (kept)
+
+Removes zng_deflate_try_stored and the evidence tracking from step 004 and
+returns levels 2-9 to the literal-run skip of step 002. What survives from
+the experiment: skipped positions are hashed with a stride (every 2nd at
+levels 2-6, all at 7-9) via zng_deflate_insert_stride, and the streaming
+round-trip checker rt.c. Verified: test suite, ASan at levels 1-9, streaming
+round trips of mozilla at four chunk sizes, difftest 11 x 475 (0 failures).
+
+Ratio is back where step 002 had it or better (mozilla level 6 -0.25%,
+samba -0.06%, x-ray level 2 -1.0% instead of -1.9% thanks to the stride
+hashing). The price of hashing every 2nd skipped position at levels 2-4 is
+visible on incompressible data: random bytes at level 2 run at 450 MB/s
+instead of 1.5-2 GB/s. The next step revisits that trade.
