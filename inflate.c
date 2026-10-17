@@ -1341,9 +1341,13 @@ int32_t Z_EXPORT PREFIX(inflate)(PREFIX3(stream) *strm, int32_t flush) {
         strm->avail_out = user_left;
         delivered += inflate_drain(strm, state, checked);
         strm->total_out = total_out_in + delivered;
-        Assert(state->wpend == 0 || state->mode == LEN, "pending output outside LEN");
+        /* Pending output only comes from the fast loops, which leave mode LEN,
+           TYPE, BAD or (safe loop) MATCH; DONE is reached by the byte-at-a-time
+           path alone, so the end is never reported with bytes pending. */
+        Assert(state->wpend == 0 || state->mode == LEN || state->mode == TYPE ||
+               state->mode == BAD || state->mode == MATCH, "pending output in an unexpected state");
         if (state->wpend != 0 && ret == Z_STREAM_END)
-            ret = Z_OK;                     /* cannot happen; never report the end with bytes pending */
+            ret = Z_OK;
         /* The segment ended at the window's end with the caller's buffer not
            full and input left: continue at the start of the window, so the
            call still returns only when input or output is exhausted. */
