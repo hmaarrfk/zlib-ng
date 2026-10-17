@@ -204,3 +204,26 @@ of 450 MB/s, JPEG 1.4 GB/s; x-ray and geo at levels 2-4 return to -1.0% /
 Noise note: the first run of a freshly built binary on random data came out
 at 720 MB/s; five repeats gave 1.30-1.57 GB/s. Single numbers on
 incompressible data carry about +-10%.
+
+### 007 full-tier checkpoint (measurement only)
+
+Full tier (adds silesia, canterbury and calgary) of the state after step
+006, the state the pull request was opened from. Geomean speedup vs. the
+baseline per corpus and level:
+
+| corpus | L1 | L3 | L6 | L8 | L9 | inflate |
+|---|---|---|---|---|---|---|
+| silesia | 1.00 | 1.09 | 1.00 | 1.08 | 1.06 | 1.00 |
+| canterbury | 0.98 | 0.99 | 0.99 | 1.04 | 1.03 | 1.00 |
+| calgary | 0.98 | 1.02 | 1.01 | 1.07 | 1.02 | 1.00 |
+
+This is the honest number for ordinary compressible files: a few percent,
+with level 1 on small text files 2% slower (the per-literal miss counter in a
+ten-cycle loop). The large multiples are confined to input that does not
+compress: random and realistic_rgb 1 MiB at levels 2-3 are 5.6-7.6x in this
+run, and the per-file tables of steps 002/003 have the 10-28x cases.
+
+Thread scaling (independent streams, silesia/dickens): unchanged within
+noise at every thread count, as expected for a single-threaded library.
+The chunkmemset microbenchmarks read 0.73-0.83x in this run although that
+code is untouched; they are nanosecond-scale and move with code alignment.
