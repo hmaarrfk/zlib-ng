@@ -1,9 +1,9 @@
 /* test_inflate_window.cc - inflate() with small output buffers (in-window decoding)
  *
- * zlib-ng's deflate never emits distances above 32506, so round-trip tests
- * cannot reach the far end of the 32K window. These tests hand-build raw
- * deflate streams with distances up to 32768 and decode them with small
- * output buffers, through both the fast loop and the byte-at-a-time path.
+ * Hand-built raw deflate streams decoded with small output buffers: the
+ * return-code contract with pending output, Z_BLOCK boundaries, inflateCopy
+ * and dictionaries. Match distances at the window's far end are covered by
+ * test_inflate_distance.cc.
  */
 
 #include "zbuild.h"
@@ -111,34 +111,6 @@ static void decode_chunked(const std::vector<uint8_t> &stream, const std::vector
 }
 
 } // namespace
-
-/* Far distances with the fast loop: short copies whose chunk over-write would clobber
-   the oldest history in a circular window, then matches that read exactly that history. */
-TEST(inflate_window, far_distance_fast_path) {
-    std::vector<uint8_t> stream, expected;
-    build_stream(40000, {{5, 100}, {10, 32766}, {7, 32760}, {258, 32768}, {3, 32768}, {20, 32512}, {258, 32768}}, stream, expected);
-    for (uint32_t chunk : {64u, 259u, 1000u, 4096u, 8192u, 16383u, 16384u, 65536u})
-        decode_chunked(stream, expected, chunk, 0);
-}
-
-/* The same through the byte-at-a-time path (input fed 14 bytes per call keeps the fast loop out). */
-TEST(inflate_window, far_distance_slow_path) {
-    std::vector<uint8_t> stream, expected;
-    build_stream(40000, {{5, 100}, {10, 32766}, {7, 32760}, {258, 32768}, {3, 32768}, {20, 32512}, {258, 32768}}, stream, expected);
-    for (uint32_t chunk : {64u, 1000u, 4096u, 16384u})
-        decode_chunked(stream, expected, chunk, 14);
-}
-
-/* Matches spanning the window's end at every alignment, with a window that wraps several times. */
-TEST(inflate_window, wraparound) {
-    std::vector<match_op> ops;
-    for (int i = 0; i < 600; i++) ops.push_back({200 + (i % 59), 32768 - (i % 300)});
-    std::vector<uint8_t> stream, expected;
-    build_stream(33000, ops, stream, expected);
-    for (uint32_t chunk : {64u, 333u, 4096u, 16383u, 20000u})
-        decode_chunked(stream, expected, chunk, 0);
-    decode_chunked(stream, expected, 777, 14);
-}
 
 /* With bytes pending in the window and no output space, inflate must report Z_BUF_ERROR, not Z_OK. */
 TEST(inflate_window, no_progress_is_buf_error) {
