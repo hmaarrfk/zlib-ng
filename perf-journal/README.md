@@ -259,3 +259,18 @@ costs 0.01% on the corpus for 5-6% speed. Applied to the level table:
 corpus 106.7 -> 123.2 MB/s (1.15x) at ratio 2.4862 -> 2.4855 (-0.03%);
 kennedy.xls 27 -> 44 MB/s, mozilla 106 -> 160 MB/s (ratio -0.09%), ptt5
 145 -> 181 MB/s (-0.19%), dickens/webster +4-5% at identical ratio.
+
+### Finding: two-literal inflate table entries gain nothing with a 10-bit root
+
+The literal path of inflate_fast is bound by the dependency chain
+hold -> table index -> table load -> shift, about six cycles per literal
+(650 MB/s on pure-literal input). An entry format was added where a root
+table slot whose code is a literal and whose remaining root bits hold a
+complete second literal code decodes both at once (op = 128, both codes'
+bits, both literals in val), with inflate(), inflateBack() and inflate_fast()
+all updated. It passed the test suite, ASan and the chunked round trips, and
+changed nothing: 0.98-1.02x on every inflate benchmark. Counting showed why:
+with the 10-bit root table not a single root entry pairs on dickens or
+x-ray at level 9, since literal codes there are 6-9 bits long. Pairs would
+need a 12-bit root (4096 entries, new ENOUGH constants and 4x the table
+build cost per dynamic block). Reverted.
