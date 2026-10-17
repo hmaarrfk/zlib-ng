@@ -10,10 +10,10 @@
  */
 
 /* insert_match assumes:
- * - s->lookahead > match.match_length + WANT_MIN_MATCH
+ * - lookahead > match.match_length + WANT_MIN_MATCH
  * - match_len >= WANT_MIN_MATCH
  */
-static void SUFFIX(insert_match)(deflate_state *s, unsigned char *Z_RESTRICT window, struct match match, const uint32_t max_len) {
+Z_FORCEINLINE static void SUFFIX(insert_match)(deflate_state *s, unsigned char *Z_RESTRICT window, struct match match, const uint32_t max_len) {
     uint32_t start;
     uint32_t match_len = match.match_length;
     uint32_t strstart = match.strstart + 1; // string at strstart already in table
@@ -34,22 +34,24 @@ static void SUFFIX(insert_match)(deflate_state *s, unsigned char *Z_RESTRICT win
         start = match.orgstart;
 #endif
 
-    insert_knuth_batch(s, window, start, end - start);
+    insert_knuth_batch_static(s, window, start, end - start);
 }
 
-Z_FORCEINLINE static struct match SUFFIX(find_best_match)(deflate_state *s, uint32_t hash_head, int32_t max_dist) {
+/* Look up the longest match for the string at strstart. The caller has already
+ * stored strstart and lookahead into the state, which longest_match reads. */
+Z_FORCEINLINE static struct match SUFFIX(find_best_match)(deflate_state *s, uint32_t strstart, uint32_t hash_head, uint32_t max_dist) {
     struct match m;
-    int32_t dist;
+    uint32_t dist;
 
-    m.strstart = s->strstart;
+    m.strstart = strstart;
 #ifdef USE_FIZZLE
-    m.orgstart = m.strstart;
+    m.orgstart = strstart;
 #else
     m.orgstart = 0; // For sanitizer
 #endif
 
-    dist = (int32_t)s->strstart - (int32_t)hash_head;
-    if (dist <= max_dist && dist > 0 && hash_head != 0) {
+    dist = strstart - hash_head;
+    if (dist - 1 < max_dist && hash_head != 0) {
         /* To simplify the code, we prevent matches with the string
          * of window index 0 (in particular we have to avoid a match
          * of the string with itself at the start of the input file).
@@ -151,6 +153,11 @@ static void fizzle_matches(unsigned char *Z_RESTRICT window, struct match *Z_RES
 }
 #endif
 
+/* ===========================================================================
+ * The hot loop state (strstart, lookahead, sym_next, hash tables) lives in
+ * locals, see deflate_fast.c for why. The state is written back before every
+ * call that reads it (fill_window, longest_match, block flush).
+ */
 Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
     ALIGNED_(16) struct match current_match = {0};
 #ifdef USE_FIZZLE
@@ -159,10 +166,30 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
 #endif
     uint32_t max_len = (16 * s->max_insert_length);
     unsigned char *window = s->window;
-    int32_t max_dist = MAX_DIST(s);
+    Pos *head = s->head;
+    Pos *prev = s->prev;
+    const uint32_t w_mask = W_MASK(s);
+    const uint32_t max_dist = MAX_DIST(s);
+    uint32_t strstart = s->strstart;
+    uint32_t lookahead = s->lookahead;
+    unsigned int sym_next = s->sym_next;
+    const unsigned int sym_end = s->sym_end;
+
+#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; } while (0)
+#define LOAD_STATE() do { strstart = s->strstart; lookahead = s->lookahead; sym_next = s->sym_next; } while (0)
+/* Insert the string at pos and return the previous chain head */
+#define INSERT_AT(pos, hash_head_out) do { \
+        uint32_t val_ = Z_U32_FROM_LE(zng_memread_4(window + (pos))); \
+        uint32_t h_; \
+        UPDATE_HASH_KNUTH(h_, val_); \
+        hash_head_out = head[h_]; \
+        if (LIKELY(hash_head_out != (pos))) { \
+            prev[(pos) & w_mask] = (Pos)hash_head_out; \
+            head[h_] = (Pos)(pos); \
+        } \
+    } while (0)
 
     for (;;) {
-        int bflush = 0;       /* set if current block must be flushed */
         uint32_t curr_match_len;
 
         /* Make sure that we always have enough lookahead, except
@@ -170,12 +197,14 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
          * for the next match, plus WANT_MIN_MATCH bytes to insert the
          * string following the next current_match.
          */
-        if (UNLIKELY(s->lookahead < MIN_LOOKAHEAD)) {
+        if (UNLIKELY(lookahead < MIN_LOOKAHEAD)) {
+            SYNC_STATE();
             PREFIX(fill_window)(s);
-            if (UNLIKELY(s->lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH)) {
+            LOAD_STATE();
+            if (UNLIKELY(lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH)) {
                 return need_more;
             }
-            if (UNLIKELY(s->lookahead == 0))
+            if (UNLIKELY(lookahead == 0))
                 break; /* flush the current block */
 #ifdef USE_FIZZLE
             next_match.match_length = 0;
@@ -193,34 +222,39 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
             next_match.match_length = 0;
         } else {
             uint32_t hash_head = 0;   /* head of the hash chain */
-            if (LIKELY(s->lookahead >= WANT_MIN_MATCH)) {
-                hash_head = insert_knuth(s, window, s->strstart);
+            if (LIKELY(lookahead >= WANT_MIN_MATCH)) {
+                INSERT_AT(strstart, hash_head);
             }
 
-            current_match = SUFFIX(find_best_match)(s, hash_head, max_dist);
+            s->strstart = strstart;
+            s->lookahead = lookahead;
+            current_match = SUFFIX(find_best_match)(s, strstart, hash_head, max_dist);
         }
         curr_match_len = current_match.match_length;
 
-        if (curr_match_len >= WANT_MIN_MATCH && s->lookahead > (unsigned int)(curr_match_len + WANT_MIN_MATCH )) {
+        if (curr_match_len >= WANT_MIN_MATCH && lookahead > (curr_match_len + WANT_MIN_MATCH)) {
             SUFFIX(insert_match)(s, window, current_match, max_len);
         }
 
         /* now, look ahead one */
-        if (LIKELY(s->lookahead > MIN_LOOKAHEAD && (current_match.strstart + curr_match_len) < window_end)) {
-            s->strstart = current_match.strstart + curr_match_len;
-            uint32_t hash_head = insert_knuth(s, window, s->strstart);
+        if (LIKELY(lookahead > MIN_LOOKAHEAD && (current_match.strstart + curr_match_len) < window_end)) {
+            uint32_t next_start = current_match.strstart + curr_match_len;
+            uint32_t hash_head;
+            INSERT_AT(next_start, hash_head);
 
-            next_match = SUFFIX(find_best_match)(s, hash_head, max_dist);
+            s->strstart = next_start;
+            s->lookahead = lookahead;
+            next_match = SUFFIX(find_best_match)(s, next_start, hash_head, max_dist);
 
             uint32_t tmp_cmatch_len_sub = curr_match_len - 1;
             if (tmp_cmatch_len_sub
                      && next_match.match_length >= WANT_MIN_MATCH
                      && tmp_cmatch_len_sub <= next_match.match_start) {
-                fizzle_matches(window, &current_match, &next_match, max_dist);
+                fizzle_matches(window, &current_match, &next_match, (int32_t)max_dist);
                 curr_match_len = current_match.match_length;
             }
 
-            s->strstart = current_match.strstart;
+            strstart = current_match.strstart;
             if (curr_match_len == 0) {
                 /* If current match fizzled out, jump to next loop iteration */
                 continue;
@@ -231,36 +265,42 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
 #else
         // WITHOUT_FIZZLE: We don't look for future matches, so code is much simplified
         uint32_t hash_head = 0;   /* head of the hash chain */
-        if (LIKELY(s->lookahead >= WANT_MIN_MATCH)) {
-            hash_head = insert_knuth(s, window, s->strstart);
+        if (LIKELY(lookahead >= WANT_MIN_MATCH)) {
+            INSERT_AT(strstart, hash_head);
         }
 
-        current_match = SUFFIX(find_best_match)(s, hash_head, max_dist);
+        s->strstart = strstart;
+        s->lookahead = lookahead;
+        current_match = SUFFIX(find_best_match)(s, strstart, hash_head, max_dist);
         curr_match_len = current_match.match_length;
 
-        if (curr_match_len >= WANT_MIN_MATCH && s->lookahead > (unsigned int)(curr_match_len + WANT_MIN_MATCH )) {
+        if (curr_match_len >= WANT_MIN_MATCH && lookahead > (curr_match_len + WANT_MIN_MATCH)) {
             SUFFIX(insert_match)(s, window, current_match, max_len);
         }
 #endif
 
         /* now emit the current match */
-        s->lookahead -= curr_match_len;
+        lookahead -= curr_match_len;
         if (LIKELY(curr_match_len == 1)) {
             /* matches shorter than WANT_MIN_MATCH are set to 1, we need to emit these as literals */
-            bflush = zng_tr_tally_lit(s, window[current_match.strstart]);
+            sym_next = zng_tr_tally_lit_at(s, sym_next, window[current_match.strstart]);
         } else {
             check_match(s, current_match.strstart, current_match.match_start, curr_match_len);
-            bflush = zng_tr_tally_dist(s, current_match.strstart - current_match.match_start, curr_match_len - STD_MIN_MATCH);
+            sym_next = zng_tr_tally_dist_at(s, sym_next, current_match.strstart - current_match.match_start, curr_match_len - STD_MIN_MATCH);
         }
 
         /* move the "cursor" forward */
-        s->strstart += curr_match_len;
+        strstart += curr_match_len;
 
-        if (UNLIKELY(bflush))
+        if (UNLIKELY(sym_next == sym_end)) {
+            SYNC_STATE();
             FLUSH_BLOCK(s, window, 0);
+            sym_next = s->sym_next;
+        }
     }
 
-    s->insert = s->strstart < (STD_MIN_MATCH - 1) ? s->strstart : (STD_MIN_MATCH - 1);
+    SYNC_STATE();
+    s->insert = strstart < (STD_MIN_MATCH - 1) ? strstart : (STD_MIN_MATCH - 1);
     if (flush == Z_FINISH) {
         FLUSH_BLOCK(s, window, 1);
         return finish_done;
@@ -269,4 +309,7 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
         FLUSH_BLOCK(s, window, 0);
 
     return block_done;
+#undef SYNC_STATE
+#undef LOAD_STATE
+#undef INSERT_AT
 }

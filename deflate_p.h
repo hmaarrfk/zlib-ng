@@ -116,6 +116,61 @@ static inline int zng_tr_tally_dist(deflate_state* s, uint32_t dist, uint32_t le
     return (s->sym_next == s->sym_end);
 }
 
+/* ===========================================================================
+ * Register-resident variants of the tally functions. The symbol buffer write
+ * goes through memcpy-style byte access, which forces the compiler to assume
+ * it may alias every field of the deflate state, so a loop that keeps sym_next
+ * in the state reloads it (and everything else it holds) after every symbol.
+ * These take sym_next by value and return the new value, so the caller keeps
+ * it in a register and only the frequency counter touches memory. The caller
+ * must store it back into s->sym_next before anything reads the state.
+ */
+Z_FORCEINLINE static unsigned int zng_tr_tally_lit_at(deflate_state *s, unsigned int sym_next, unsigned char c) {
+#ifdef LIT_MEM
+    s->d_buf[sym_next] = 0;
+    s->l_buf[sym_next] = c;
+    sym_next += 1;
+#else
+#  if OPTIMAL_CMP >= 32
+    zng_memwrite_4(&s->sym_buf[sym_next], Z_U32_TO_LE((uint32_t)c << 16));
+#  else
+    s->sym_buf[sym_next] = 0;
+    s->sym_buf[sym_next+1] = 0;
+    s->sym_buf[sym_next+2] = c;
+#  endif
+    sym_next += 3;
+#endif
+    s->dyn_ltree[c].Freq++;
+    Tracevv((stderr, "%c", c));
+    return sym_next;
+}
+
+Z_FORCEINLINE static unsigned int zng_tr_tally_dist_at(deflate_state *s, unsigned int sym_next, uint32_t dist, uint32_t len) {
+#ifdef LIT_MEM
+    Assert(dist <= UINT16_MAX, "dist should fit in uint16_t");
+    Assert(len <= UINT8_MAX, "len should fit in uint8_t");
+    s->d_buf[sym_next] = (uint16_t)dist;
+    s->l_buf[sym_next] = (uint8_t)len;
+    sym_next += 1;
+#else
+#  if OPTIMAL_CMP >= 32
+    zng_memwrite_4(&s->sym_buf[sym_next], Z_U32_TO_LE(dist | ((uint32_t)len << 16)));
+#  else
+    s->sym_buf[sym_next] = (uint8_t)(dist);
+    s->sym_buf[sym_next+1] = (uint8_t)(dist >> 8);
+    s->sym_buf[sym_next+2] = (uint8_t)len;
+#  endif
+    sym_next += 3;
+#endif
+    dist--;
+    Assert(dist < MAX_DIST(s) && (uint16_t)d_code(dist) < (uint16_t)D_CODES,
+        "zng_tr_tally: bad match");
+
+    s->dyn_ltree[zng_length_code[len] + LITERALS + 1].Freq++;
+    s->dyn_dtree[d_code(dist)].Freq++;
+    return sym_next;
+}
+
 /* =========================================================================
  * Flush as much pending output as possible. All deflate() output, except for some
  * deflate_stored() output, goes through this function so some applications may wish to
