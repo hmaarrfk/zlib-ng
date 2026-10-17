@@ -227,3 +227,25 @@ Thread scaling (independent streams, silesia/dickens): unchanged within
 noise at every thread count, as expected for a single-threaded library.
 The chunkmemset microbenchmarks read 0.73-0.83x in this run although that
 code is untouched; they are nanosecond-scale and move with code alignment.
+
+### Finding: a 15-bit hash table (HASH_SIZE=32768) is slower everywhere
+
+Tried in case the 128 KiB head table missing L1 was the bottleneck at the
+higher levels. Ratio within 0.1%, speed 0-10% worse at levels 2-6 and
+10-37% worse at level 9 (kennedy.xls 74 -> 47 MB/s): the extra collisions
+lengthen every chain. Not committed.
+
+### Finding: inlining longest_match into the strategies on ARM64 gains nothing
+
+Counters compiled into match_tpl.h show the default level calls
+longest_match about once per two input bytes (dickens: 3.9M calls, 21M
+counted chain candidates and 1.0M compare256 calls for 8.4 MB) and that
+kennedy.xls at level 8 walks 90 candidates per input byte, which is why that
+file is 14x slower at level 8 than at level 6. Since NEON is part of the
+ARM64 base architecture, the strategies were made to instantiate the NEON
+match finder as a static function and inline it, bypassing the function
+table, its indirect call and the ten callee-saved registers. Output stayed
+identical and so did speed: dickens, mozilla, webster and kennedy.xls at
+levels 2, 3, 6, 7 and 9 moved by -1.5% to +2.5%, all within noise. The
+per-call overhead is already hidden by out-of-order execution; the cost is
+the chain walk itself, one L1 load latency per candidate. Reverted.
