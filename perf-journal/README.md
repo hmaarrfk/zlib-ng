@@ -406,3 +406,88 @@ in it; (2) small output buffers (libpng rows, HTTP streaming, pipes) lose
 1.3x at 4 KiB and 3x at 64 B to the safe loop, the per-call window copy
 and per-call fixed overhead, and that is where a multi-x win is possible;
 (3) table building is 2-5% on files with many blocks.
+
+### 012 in-window decoding for small output buffers (kept, output unchanged)
+
+When the caller's buffer is small, `inflate()` now decodes into the sliding
+window at the write index and copies the caller's share out, instead of
+running the end-of-buffer safe loop and then copying every byte into the
+window on return. This step keeps the decode bounded by the caller's
+`avail_out`; only the symbol that crosses the limit (at most 257 bytes)
+waits in the window for the next call, which is the amount of in-flight
+output the MATCH state already allowed. Input is never consumed ahead of
+that, so a call still returns only when input or output is exhausted.
+
+The first draft read ahead by a whole window and was 2-4x faster at 64-byte
+buffers, and it broke gzread: `gz_decomp` (and libpng) never call inflate
+with `avail_in == 0`; they treat "input exhausted without Z_STREAM_END" as
+a truncated file, and read-ahead consumed the input while output was still
+pending. That draft was discarded before an adversarial review of the
+bounded design found four more problems, all reproduced with probes
+(`inflate-probes/`):
+
+1. **Blocker.** The chunked copies write up to 258 bytes past the token
+   they copy. In the caller's buffer that is harmless; in a circular window
+   those slots hold the oldest history, and a later match with a distance
+   within 258 of 32768 read the garbage. zlib-ng's own deflate caps
+   distances at 32506, so no round-trip test can see this; libdeflate,
+   zopfli and 7-zip emit distances up to 32768. Fixed by making the circular
+   window 512 bytes larger than the 32K distance range: the clobbered slots
+   are at distances no valid stream can reference. `test_inflate_window.cc`
+   hand-builds such streams and fails if the gap is removed.
+2. Z_OK returned when no progress was possible (zlib promises Z_BUF_ERROR).
+3. `inflateMark` reported pending bytes as a stored block in progress.
+4. `inflateSetDictionary` on a raw stream with pending output advanced the
+   window past the pending bytes.
+
+Also from that review: the checksum is now computed while copying out
+(fused adler32_copy / crc32_copy), so `strm->adler` covers exactly
+`total_out` bytes as documented. `results/012-chunk-timing.txt`, level 9,
+head vs. baseline, same driver (`infprof.c`), MB/s:
+
+| output buffer | dickens | mozilla | xml | text | kennedy.xls |
+|---|---|---|---|---|---|
+| 64 B | 1.44x | 1.14x | 1.12x | 1.27x | 0.98x |
+| 512 B | 1.42x | 1.19x | 1.26x | 1.37x | 1.05x |
+| 2 KiB | 1.10x | 1.05x | 1.08x | 1.11x | - |
+| 4 KiB | 1.03x | 1.01x | 1.02x | 1.04x | 0.99x |
+| 16 KiB (in-window) | 0.96x | 0.97x | 0.95x | 0.94x | 1.00x |
+| 64 KiB, whole (direct) | 1.00x | 1.00x | 1.00x | 1.01x | 1.00x |
+
+Bounded decoding helps only below 4 KiB, because the per-call fixed cost
+and the copy are still paid per call; the threshold was set to 4 KiB
+(`results/012-threshold.txt`).
+
+### 013 read-ahead into the window (kept, output unchanged)
+
+The fast loop now runs to the window's end instead of stopping at the
+caller's buffer size; the surplus waits in the window and is delivered by
+the following calls, so a consumer reading 64-byte or 4 KiB pieces gets
+the full-buffer fast loop and pays the per-call cost on a copy only. What
+makes this compatible with gzread and libpng: the fast loop holds one input
+byte back while it runs ahead, so pending output never coincides with
+`avail_in == 0`, and pending output always comes with `avail_out == 0`.
+The byte-at-a-time path never runs ahead, so Z_FINISH one-shot calls with
+an exact buffer, Z_BLOCK and Z_TREES are unchanged. The visible semantic
+change is that `total_in` and the window lead `total_out` by up to a window
+of output while bytes are pending; `test_inflate_window.cc` models the
+gzread pattern (never call inflate with `avail_in == 0`) at 1 to 4095 byte
+buffers. The threshold moved to 24 KiB after `results/013-threshold.txt`
+showed in-window read-ahead ahead of direct decoding up to 24 KiB and
+behind it from 32 KiB.
+
+`results/013-chunk-timing.txt`, level 9, head vs. baseline, MB/s:
+
+| output buffer | dickens | mozilla | xml | x-ray | kennedy.xls | text | noisy rgb |
+|---|---|---|---|---|---|---|---|
+| 64 B | 2.09x | 1.61x | 1.96x | 1.28x | 1.53x | 2.15x | 1.22x |
+| 512 B | 1.54x | 1.36x | 1.51x | 1.12x | 1.18x | 1.59x | 1.10x |
+| 2 KiB | 1.18x | 1.17x | 1.24x | 1.06x | 1.06x | 1.23x | 1.04x |
+| 4 KiB | 1.14x | 1.13x | 1.18x | - | - | 1.26x | - |
+| 8 KiB | 1.15x | 1.10x | 1.14x | - | - | 1.17x | - |
+| 16 KiB | 1.13x | 1.04x | 1.11x | 1.06x | - | 1.16x | - |
+| 64 KiB, whole (direct) | 1.00x | 1.00x | 1.00x | 1.00x | 1.00x | 1.00x | 1.00x |
+
+gzip-wrapped streams gain the same (the checksum is fused into the copy).
+The remaining gap to whole-buffer speed at 64 bytes (dickens 879 vs 1376
+MB/s) is the per-call entry and exit of `inflate()` plus a 64-byte copy.

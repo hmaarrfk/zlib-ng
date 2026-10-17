@@ -1,0 +1,96 @@
+== L9 raw out=64
+dickens        base    417  head    601  1.44x
+mozilla        base    550  head    629  1.14x
+xml            base    987  head   1107  1.12x
+x-ray          base    427  head    457  1.07x
+kennedy.xls    base   1274  head   1253  0.98x
+text1m.bin     base    588  head    747  1.27x
+rgb1m.bin      base    340  head    340  1.00x
+== L9 gzip out=64
+dickens        base    412  head    590  1.43x
+mozilla        base    536  head    621  1.16x
+xml            base    966  head   1053  1.09x
+x-ray          base    420  head    453  1.08x
+kennedy.xls    base   1203  head   1192  0.99x
+text1m.bin     base    570  head    720  1.26x
+rgb1m.bin      base    332  head    344  1.04x
+== L9 raw out=512
+dickens        base    615  head    872  1.42x
+mozilla        base    704  head    839  1.19x
+xml            base   1588  head   2003  1.26x
+x-ray          base    502  head    550  1.10x
+kennedy.xls    base   1896  head   1984  1.05x
+text1m.bin     base    916  head   1257  1.37x
+rgb1m.bin      base    392  head    412  1.05x
+== L9 gzip out=512
+dickens        base    605  head    830  1.37x
+mozilla        base    685  head    803  1.17x
+xml            base   1495  head   1776  1.19x
+x-ray          base    493  head    538  1.09x
+kennedy.xls    base   1772  head   1803  1.02x
+text1m.bin     base    875  head   1185  1.35x
+rgb1m.bin      base    382  head    404  1.06x
+== L9 raw out=4096
+dickens        base    842  head    868  1.03x
+mozilla        base    855  head    866  1.01x
+xml            base   2029  head   2061  1.02x
+x-ray          base    526  head    529  1.01x
+kennedy.xls    base   2205  head   2186  0.99x
+text1m.bin     base   1225  head   1280  1.04x
+rgb1m.bin      base    401  head    401  1.00x
+== L9 gzip out=4096
+dickens        base    821  head    856  1.04x
+mozilla        base    847  head    862  1.02x
+xml            base   2039  head   2110  1.03x
+x-ray          base    527  head    531  1.01x
+kennedy.xls    base   2110  head   2172  1.03x
+text1m.bin     base   1197  head   1256  1.05x
+rgb1m.bin      base    400  head    400  1.00x
+== L9 raw out=16383
+dickens        base    870  head    832  0.96x
+mozilla        base    936  head    907  0.97x
+xml            base   2269  head   2159  0.95x
+x-ray          base    560  head    530  0.95x
+kennedy.xls    base   2268  head   2268  1.00x
+text1m.bin     base   1316  head   1239  0.94x
+rgb1m.bin      base    431  head    421  0.98x
+== L9 gzip out=16383
+dickens        base    873  head    830  0.95x
+mozilla        base    934  head    904  0.97x
+xml            base   2241  head   2136  0.95x
+x-ray          base    557  head    535  0.96x
+kennedy.xls    base   2243  head   2234  1.00x
+text1m.bin     base   1283  head   1225  0.95x
+rgb1m.bin      base    426  head    417  0.98x
+== L9 raw out=65536
+dickens        base   1169  head   1177  1.01x
+mozilla        base   1054  head   1055  1.00x
+xml            base   2875  head   2874  1.00x
+x-ray          base    697  head    694  1.00x
+kennedy.xls    base   2367  head   2362  1.00x
+text1m.bin     base   1745  head   1777  1.02x
+rgb1m.bin      base    488  head    504  1.03x
+== L9 gzip out=65536
+dickens        base   1175  head   1168  0.99x
+mozilla        base   1051  head   1049  1.00x
+xml            base   2796  head   2818  1.01x
+x-ray          base    694  head    703  1.01x
+kennedy.xls    base   2314  head   2314  1.00x
+text1m.bin     base   1789  head   1777  0.99x
+rgb1m.bin      base    499  head    504  1.01x
+== L9 raw out=0
+dickens        base   1392  head   1376  0.99x
+mozilla        base   1115  head   1114  1.00x
+xml            base   3240  head   3207  0.99x
+x-ray          base    783  head    782  1.00x
+kennedy.xls    base   2406  head   2384  0.99x
+text1m.bin     base   1938  head   1956  1.01x
+rgb1m.bin      base    531  head    524  0.99x
+== L9 gzip out=0
+dickens        base   1364  head   1358  1.00x
+mozilla        base   1100  head   1101  1.00x
+xml            base   3128  head   3128  1.00x
+x-ray          base    772  head    770  1.00x
+kennedy.xls    base   2351  head   2346  1.00x
+text1m.bin     base   1896  head   1960  1.03x
+rgb1m.bin      base    536  head    521  0.97x
