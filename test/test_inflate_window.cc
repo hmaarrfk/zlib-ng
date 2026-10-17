@@ -252,3 +252,129 @@ TEST(inflate_window, pending_output_keeps_input) {
         }
     }
 }
+
+/* Fixed-size buffers over a long stream: the pending bytes sometimes drain exactly into the
+   buffer, after which inflate must not report Z_BUF_ERROR (libpng treats it as fatal, Java drops
+   the delivered bytes). Also checks adler on every return for the zlib wrapper. */
+TEST(inflate_window, exact_drain_and_running_checksum) {
+    std::vector<match_op> ops;
+    for (int i = 0; i < 4000; i++) ops.push_back({3 + (i * 7) % 256, 1 + (i * 131) % 32000});
+    std::vector<uint8_t> stream, expected;
+    build_stream(20000, ops, stream, expected);
+    /* wrap the raw stream in a zlib header and trailer by recompressing the expected output */
+    std::vector<uint8_t> zstream(PREFIX(compressBound)((unsigned long)expected.size()));
+    size_t zlen = zstream.size();
+    ASSERT_EQ(PREFIX(compress2)(zstream.data(), &zlen, expected.data(), expected.size(), 6), Z_OK);
+    for (int wrapped : {0, 1}) {
+        const std::vector<uint8_t> &in = wrapped ? zstream : stream;
+        size_t inlen = wrapped ? zlen : stream.size();
+        for (uint32_t chunk : {12u, 32u, 64u, 100u, 333u}) {
+            std::vector<uint8_t> out(expected.size(), 0);
+            PREFIX3(stream) s;
+            memset(&s, 0, sizeof(s));
+            ASSERT_EQ(PREFIX(inflateInit2)(&s, wrapped ? 15 : -15), Z_OK);
+            s.next_in = (z_const unsigned char *)in.data();
+            s.avail_in = (uint32_t)inlen;
+            s.next_out = out.data();
+            s.avail_out = chunk;
+            int ret;
+            for (;;) {
+                size_t before = s.total_out;
+                ret = PREFIX(inflate)(&s, Z_NO_FLUSH);
+                if (ret == Z_STREAM_END) break;
+                ASSERT_EQ(ret, Z_OK) << "chunk " << chunk << " wrapped " << wrapped << " total_out " << s.total_out
+                                     << " produced " << s.total_out - before;
+                if (wrapped)
+                    ASSERT_EQ(s.adler, PREFIX(adler32)(1, out.data(), (uint32_t)s.total_out)) << "at " << s.total_out;
+                if (s.avail_out == 0)
+                    s.avail_out = (uint32_t)MIN((size_t)chunk, expected.size() - s.total_out);
+            }
+            ASSERT_EQ(PREFIX(inflateEnd)(&s), Z_OK);
+            EXPECT_EQ(s.total_out, expected.size());
+            EXPECT_EQ(memcmp(out.data(), expected.data(), expected.size()), 0);
+        }
+    }
+}
+
+/* A Z_BLOCK call after small-buffer calls must still stop at every block boundary, including
+   the one whose output was pending. The stream has exactly two blocks. */
+TEST(inflate_window, z_block_after_pending) {
+    std::vector<match_op> ops;
+    for (int i = 0; i < 100; i++) ops.push_back({200, 1 + i * 13});
+    std::vector<uint8_t> stream, expected;
+    build_stream(3000, ops, stream, expected);   /* stored block, then one fixed block */
+    for (uint32_t first : {1u, 64u, 2999u, 3000u, 3001u, 5000u}) {
+        std::vector<uint8_t> out(expected.size(), 0);
+        PREFIX3(stream) s;
+        memset(&s, 0, sizeof(s));
+        ASSERT_EQ(PREFIX(inflateInit2)(&s, -15), Z_OK);
+        s.next_in = (z_const unsigned char *)stream.data();
+        s.avail_in = (uint32_t)stream.size();
+        s.next_out = out.data();
+        s.avail_out = first;
+        int ret = PREFIX(inflate)(&s, Z_NO_FLUSH);
+        ASSERT_TRUE(ret == Z_OK || ret == Z_STREAM_END);
+        int boundaries = (ret == Z_OK && (s.data_type & 128)) ? 1 : 0;
+        while (ret != Z_STREAM_END) {
+            s.avail_out = (uint32_t)MIN((size_t)64, expected.size() - s.total_out);
+            ret = PREFIX(inflate)(&s, Z_BLOCK);
+            ASSERT_TRUE(ret == Z_OK || ret == Z_STREAM_END) << "ret " << ret;
+            if (ret == Z_OK && (s.data_type & 128))
+                boundaries++;
+        }
+        /* a first call that consumes the whole stored block runs on into the next block
+           (as the baseline does), so only the final boundary remains for Z_BLOCK to report */
+        EXPECT_EQ(boundaries, first < 3000 ? 2 : 1) << "first call " << first;
+        ASSERT_EQ(PREFIX(inflateEnd)(&s), Z_OK);
+        EXPECT_EQ(memcmp(out.data(), expected.data(), expected.size()), 0);
+    }
+}
+
+/* inflateCopy with bytes pending: both copies must finish identically. Also alternates
+   small and large buffers so the window and direct paths hand over to each other. */
+TEST(inflate_window, copy_with_pending_and_alternation) {
+    std::vector<match_op> ops;
+    for (int i = 0; i < 3000; i++) ops.push_back({3 + (i * 11) % 256, 1 + (i * 97) % 32500});
+    std::vector<uint8_t> stream, expected;
+    build_stream(30000, ops, stream, expected);
+    std::vector<uint8_t> out(expected.size(), 0), out2(expected.size(), 0);
+    PREFIX3(stream) s;
+    memset(&s, 0, sizeof(s));
+    ASSERT_EQ(PREFIX(inflateInit2)(&s, -15), Z_OK);
+    s.next_in = (z_const unsigned char *)stream.data();
+    s.avail_in = (uint32_t)stream.size();
+    s.next_out = out.data();
+    s.avail_out = 64;
+    int ret, calls = 0, copied = 0;
+    for (;;) {
+        ret = PREFIX(inflate)(&s, Z_NO_FLUSH);
+        if (ret == Z_STREAM_END) break;
+        ASSERT_EQ(ret, Z_OK);
+        if (++calls == 37 && !copied) {
+            /* pending bytes are likely here; copy and finish the copy with 100-byte buffers */
+            PREFIX3(stream) c;
+            memset(&c, 0, sizeof(c));
+            ASSERT_EQ(PREFIX(inflateCopy)(&c, &s), Z_OK);
+            memcpy(out2.data(), out.data(), s.total_out);
+            c.next_out = out2.data() + s.total_out;
+            int r2;
+            for (;;) {
+                c.avail_out = (uint32_t)MIN((size_t)100, expected.size() - c.total_out);
+                r2 = PREFIX(inflate)(&c, Z_NO_FLUSH);
+                if (r2 == Z_STREAM_END) break;
+                ASSERT_EQ(r2, Z_OK);
+            }
+            EXPECT_EQ(c.total_out, expected.size());
+            EXPECT_EQ(memcmp(out2.data(), expected.data(), expected.size()), 0);
+            ASSERT_EQ(PREFIX(inflateEnd)(&c), Z_OK);
+            copied = 1;
+        }
+        if (s.avail_out == 0) {
+            uint32_t next = (calls % 5 == 0) ? 30000u : (calls % 3 == 0) ? 24576u : 64u;
+            s.avail_out = (uint32_t)MIN((size_t)next, expected.size() - s.total_out);
+        }
+    }
+    ASSERT_EQ(PREFIX(inflateEnd)(&s), Z_OK);
+    EXPECT_EQ(s.total_out, expected.size());
+    EXPECT_EQ(memcmp(out.data(), expected.data(), expected.size()), 0);
+}
