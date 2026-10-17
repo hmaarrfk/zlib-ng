@@ -3,6 +3,11 @@
 #
 # Usage: perf-journal/bench.sh <step-name> [quick|full]
 #
+# Machine speed drifts over a long session (the baseline binary itself was
+# measured 4-6% slower after a few hours), so a step named
+# <step>-baseline-rerun, produced from a worktree of the baseline commit via
+# PERF_SOURCE_DIR, pairs with the step before it in the plots.
+#
 # Writes perf-journal/results/<step-name>.json containing the Google Benchmark
 # JSON output for the chosen tier plus the thread-scaling results from
 # perf-journal/scaling.c, and regenerates the plots.
@@ -14,8 +19,11 @@ set -euo pipefail
 
 STEP="${1:?step name}"
 TIER="${2:-quick}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOURNAL="$ROOT/perf-journal"
+JOURNAL="$(cd "$(dirname "$0")" && pwd)"
+# The tree to build and measure; defaults to the tree this script lives in.
+# PERF_SOURCE_DIR=<worktree of another commit> measures that commit instead,
+# writing into this journal (used for paired baseline reruns).
+ROOT="${PERF_SOURCE_DIR:-$(cd "$JOURNAL/.." && pwd)}"
 BUILD="${PERF_BUILD_DIR:-$JOURNAL/build}"
 CC_BIN="${CC:-/usr/bin/cc}"
 CXX_BIN="${CXX:-/usr/bin/c++}"
@@ -33,8 +41,11 @@ cmake -S "$ROOT" -B "$BUILD" -G Ninja \
 cmake --build "$BUILD" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" >/dev/null
 
 # 2. Correctness gate: the whole gtest + ctest suite must pass before we measure
-(cd "$BUILD" && ctest -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -E benchmark --output-on-failure >"$BUILD/ctest.log" 2>&1) \
-    || { echo "TESTS FAILED, see $BUILD/ctest.log"; exit 1; }
+#    (PERF_SKIP_TESTS=1 skips it, for reruns of an already verified commit)
+if [ -z "${PERF_SKIP_TESTS:-}" ]; then
+    (cd "$BUILD" && ctest -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -E benchmark --output-on-failure >"$BUILD/ctest.log" 2>&1) \
+        || { echo "TESTS FAILED, see $BUILD/ctest.log"; exit 1; }
+fi
 
 # 3. Benchmark filter per tier
 QUICK_FILTER='^(deflate_bench/(level|nocrc)/(text|logfile|mixed|realistic_rgb|random|dna|short_match)/1048576/'
@@ -68,11 +79,11 @@ SCALING_JSON="$BUILD/scaling-$STEP.json"
 
 # 5. Merge into one result file with provenance
 python3 - "$STEP" "$TIER" "$GB_JSON" "$SCALING_JSON" "$JOURNAL/results/$STEP.json" <<'PY'
-import json, sys, subprocess, platform, datetime
+import json, sys, os, subprocess, platform, datetime
 step, tier, gb, sc, out = sys.argv[1:]
 gbj = json.load(open(gb))
 scj = json.load(open(sc))
-sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+sha = subprocess.run(["git", "-C", os.environ.get("PERF_SOURCE_DIR", "."), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 res = {
     "step": step,
     "tier": tier,

@@ -26,6 +26,41 @@ Plots:
 * `plots/step-<name>.png`: per-benchmark speedup of that step vs. baseline and vs. the previous step.
 * `plots/scaling.png`: aggregate throughput of N independent streams on N threads.
 
+## Where it stands
+
+The branch point is 1ab945a8. All numbers are single-thread on an Apple M5
+Max with Apple clang 21. The goal set for the branch was 10x without more
+cores; that was reached only on input that does not compress, and the table
+below says so. The last two steps measure head and the baseline commit back
+to back (the machine drifted 4-6% slower over the session, so the earlier
+per-step numbers against the first baseline run are slightly pessimistic).
+
+Paired full-tier measurement, head (step 009) vs. baseline rerun (009b):
+
+| input | L1 | L2 | L3 | L6 | L8 | L9 |
+|---|---|---|---|---|---|---|
+| random bytes, 1 MiB | 17x (tune.c) | 6.8x | 7.2x | 4.8x | - | 4.0x |
+| realistic_rgb (noisy image), 1 MiB | - | 5.6x | 5.8x | 1.03x | - | 1.18x |
+| JPEG (tune.c, 123 KiB) | 28x | 8.8x | 8.6x | 4.9x | 4.9x | 1.5x |
+| mozilla (tune.c, 8 MiB) | 1.8x | 2.1x | 2.0x | 1.4x | 1.5x | 1.2x |
+| silesia, geomean of 12 files | 1.00x | - | 1.09x | 1.00x | 1.10x | 1.05x |
+| canterbury, geomean of 11 | 0.99x | - | 0.98x | 1.01x | 1.14x | 1.01x |
+| calgary, geomean of 18 | 0.98x | - | 1.02x | 1.02x | 1.07x | 1.04x |
+| text, 1 MiB synthetic | 0.97x | 1.00x | 1.01x | 0.99x | - | 1.02x |
+
+Inflate 0.98-1.02x (untouched), checksums untouched, Huffman-only/RLE
+strategies untouched, thread scaling unchanged (the library is single
+threaded; `plots/scaling.png`). Ratio: unchanged at levels 5-9 within
+0.04% on the corpus, -0.3/-0.4% at levels 2-4, unchanged at level 1 (and no
+longer expanding incompressible input by 5%); per-file worst cases are
+x-ray and geo at levels 2-4 (-1.0% / -1.9%).
+
+Why not more on compressible input: at the default level two thirds of the
+time is the hash-chain walk at one L1 load latency per candidate, the
+deflateTune sweep shows chain depth is not a free lever, inlining the match
+finder changed nothing, and a smaller hash table is slower. Those
+experiments are recorded below with their numbers.
+
 ## Steps
 
 ### 001 register-resident loop state (kept)
@@ -274,3 +309,15 @@ with the 10-bit root table not a single root entry pairs on dickens or
 x-ray at level 9, since literal codes there are 6-9 bits long. Pairs would
 need a 12-bit root (4096 entries, new ENOUGH constants and 4x the table
 build cost per dynamic block). Reverted.
+
+### 009 final full-tier measurement and 009b paired baseline rerun
+
+Step 009 is the head of the branch measured with the full tier. Measured
+alone against the first baseline run it looked 3-5% slower on everything,
+including untouched inflate and checksum code; the baseline binary itself,
+rerun at that point, measured 0.94-0.97 of its own earlier numbers (load
+average 3-8 from other processes, twelve days of uptime). So the baseline
+commit was built from a worktree and measured again right after head
+(009b), and `plots/paired-009-full-tier-final.png` plus the table at the top
+compare the two. bench.sh gained `PERF_SOURCE_DIR` and `PERF_SKIP_TESTS` for
+that, and plot.py pairs any `*-baseline-rerun` result with the step before it.

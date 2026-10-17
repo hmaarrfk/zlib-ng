@@ -167,6 +167,13 @@ def plot_scaling(steps):
     fig.savefig(os.path.join(PLOTS, "scaling.png"))
     plt.close(fig)
 
+def paired_reruns(steps):
+    """A step named <x>-baseline-rerun is the baseline commit measured right after
+    the step before it; yield (step, rerun) pairs."""
+    for i, st in enumerate(steps):
+        if st["step"].endswith("baseline-rerun") and i > 0:
+            yield steps[i - 1], st
+
 def main():
     os.makedirs(PLOTS, exist_ok=True)
     steps = load()
@@ -180,6 +187,12 @@ def main():
     plot_bars(base, steps[-1], steps[-2] if len(steps) > 1 else None, "latest-vs-baseline.png",
               f"newest step {steps[-1]['step']} vs. baseline {base['step']}")
     plot_scaling(steps)
+    for st, rerun in paired_reruns(steps):
+        plot_bars(rerun, st, None, f"paired-{st['step']}.png",
+                  f"{st['step']} vs. baseline measured right after it ({rerun['step']})")
+        sp = speedups(rerun, st)
+        print(f"paired {st['step']} vs {rerun['step']}: " + " ".join(
+            f"{f[:10]}={gmean([v for k, v in sp.items() if family_of(k) == f]):.3f}" for f in FAMILIES))
     # Summary table to stdout for the journal
     print(f"{'step':34s} " + " ".join(f"{f[:10]:>10s}" for f in FAMILIES))
     for st in steps:
