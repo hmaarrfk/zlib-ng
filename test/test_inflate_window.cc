@@ -80,36 +80,6 @@ static void build_stream(size_t n, const std::vector<match_op> &ops, std::vector
     stream = bw.buf;
 }
 
-/* Decode with avail_out-sized output chunks; instep > 0 feeds the input that many bytes at a time. */
-static void decode_chunked(const std::vector<uint8_t> &stream, const std::vector<uint8_t> &expected,
-                           uint32_t chunk, uint32_t instep) {
-    std::vector<uint8_t> out(expected.size() + 1024, 0);
-    PREFIX3(stream) s;
-    memset(&s, 0, sizeof(s));
-    ASSERT_EQ(PREFIX(inflateInit2)(&s, -15), Z_OK);
-    s.next_in = (z_const unsigned char *)stream.data();
-    s.avail_in = instep ? 0 : (uint32_t)stream.size();
-    size_t fed = instep ? 0 : stream.size();
-    s.next_out = out.data();
-    s.avail_out = chunk;
-    int ret;
-    for (;;) {
-        if (instep && s.avail_in == 0 && fed < stream.size()) {
-            uint32_t take = (uint32_t)MIN((size_t)instep, stream.size() - fed);
-            s.avail_in = take; fed += take;
-        }
-        ret = PREFIX(inflate)(&s, Z_NO_FLUSH);
-        if (ret == Z_STREAM_END) break;
-        ASSERT_TRUE(ret == Z_OK || ret == Z_BUF_ERROR) << "ret " << ret << " at total_out " << s.total_out;
-        ASSERT_FALSE(ret == Z_OK && s.avail_out != 0 && s.avail_in != 0) << "returned with input and output space left";
-        if (s.avail_out == 0) s.avail_out = chunk;
-        ASSERT_LE(s.total_out, expected.size());
-    }
-    ASSERT_EQ(PREFIX(inflateEnd)(&s), Z_OK);
-    EXPECT_EQ(s.total_out, expected.size());
-    EXPECT_EQ(memcmp(out.data(), expected.data(), expected.size()), 0);
-}
-
 } // namespace
 
 /* With bytes pending in the window and no output space, inflate must report Z_BUF_ERROR, not Z_OK. */
@@ -257,7 +227,7 @@ TEST(inflate_window, exact_drain_and_running_checksum) {
                 ASSERT_EQ(ret, Z_OK) << "chunk " << chunk << " wrapped " << wrapped << " total_out " << s.total_out
                                      << " produced " << s.total_out - before;
                 if (wrapped)
-                    ASSERT_EQ(s.adler, PREFIX(adler32)(1, out.data(), (uint32_t)s.total_out)) << "at " << s.total_out;
+                    ASSERT_EQ(s.adler, PREFIX(adler32_z)(1, out.data(), (size_t)s.total_out)) << "at " << s.total_out;
                 if (s.avail_out == 0)
                     s.avail_out = (uint32_t)MIN((size_t)chunk, expected.size() - s.total_out);
             }
