@@ -17,6 +17,12 @@
  * The hot loop state (strstart, lookahead, sym_next, hash tables) lives in
  * locals, see deflate_fast.c for why. The state is written back before every
  * call that reads it (fill_window, longest_match, block flush).
+ *
+ * Literals skipped by the literal-run acceleration are not tallied immediately:
+ * they form a pending run just before the lazy position, and a match that is
+ * emitted later can grow backwards over them. Together with the lazy literal
+ * at strstart-1 that match_available tracks, every position below strstart is
+ * accounted for whenever a block is flushed.
  */
 Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
     longest_match_func longest_match = s->longest_match;
@@ -32,6 +38,9 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
     uint32_t lookahead = s->lookahead;
     unsigned int sym_next = s->sym_next;
     const unsigned int sym_end = s->sym_end;
+    uint32_t miss_run = s->miss_run;
+    const uint32_t skip_start = s->skip_start;
+    uint32_t pend = 0;  /* literals just before the lazy position that are not tallied yet */
 
     /* Matches this long or shorter are discarded. Z_FILTERED ignores lengths up to 5, other
      * strategies discard nothing. */
@@ -39,8 +48,15 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
     /* Same floor for longest_match, kept below good_match. */
     const uint32_t match_floor = MIN(match_discard, s->good_match - 1);
 
-#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; } while (0)
+#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; s->miss_run = miss_run; } while (0)
 #define LOAD_STATE() do { strstart = s->strstart; lookahead = s->lookahead; sym_next = s->sym_next; } while (0)
+/* Tally the pending literals, which end just before window position end_pos */
+#define TALLY_PENDING(end_pos) do { \
+        if (pend) { \
+            sym_next = zng_tr_tally_lits_at(s, sym_next, window + (end_pos) - pend, pend); \
+            pend = 0; \
+        } \
+    } while (0)
 
     /* Process the input block. */
     for (;;) {
@@ -54,6 +70,9 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
             PREFIX(fill_window)(s);
             LOAD_STATE();
             if (UNLIKELY(lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH)) {
+                /* The pending run ends before the lazy literal, if there is one */
+                TALLY_PENDING(strstart - s->match_available);
+                SYNC_STATE();
                 return need_more;
             }
             if (UNLIKELY(lookahead == 0))
@@ -115,11 +134,27 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
         if (prev_length >= STD_MIN_MATCH && match_len <= prev_length) {
             uint32_t max_insert = strstart + lookahead - STD_MIN_MATCH;
             /* Do not insert strings in hash table beyond this. */
+            uint32_t match_pos = strstart - 1;
+            uint32_t match_start = s->prev_match;
+            uint32_t emit_len = prev_length;
 
-            Assert((strstart-1) <= UINT16_MAX, "strstart-1 should fit in uint16_t");
-            check_match(s, strstart - 1, s->prev_match, prev_length);
+            /* Grow the match backwards over the pending literals: positions that
+             * were skipped by the literal-run acceleration were never searched, and
+             * a searched position only saw its own hash chain. The end of the match
+             * stays where it was, so the bookkeeping below uses prev_length. */
+            while (pend && emit_len < STD_MAX_MATCH && match_start > 0 &&
+                   window[match_pos - 1] == window[match_start - 1]) {
+                match_pos--;
+                match_start--;
+                emit_len++;
+                pend--;
+            }
+            TALLY_PENDING(match_pos);
 
-            sym_next = zng_tr_tally_dist_at(s, sym_next, strstart - 1 - s->prev_match, prev_length - STD_MIN_MATCH);
+            Assert(match_pos <= UINT16_MAX, "match_pos should fit in uint16_t");
+            check_match(s, match_pos, match_start, emit_len);
+
+            sym_next = zng_tr_tally_dist_at(s, sym_next, match_pos - match_start, emit_len - STD_MIN_MATCH);
 
             /* Insert in hash table all strings up to the end of the match.
              * strstart-1 and strstart are already inserted. If there is not
@@ -139,6 +174,7 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
             s->prev_length = 0;
             s->match_available = 0;
             strstart += mov_fwd + 1;
+            SKIP_HIT(miss_run);
 
             if (UNLIKELY(sym_next == sym_end)) {
                 SYNC_STATE();
@@ -150,11 +186,13 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
             /* If there was no match at the previous position, output a
              * single literal. If there was a match but the current match
              * is longer, truncate the previous match to a single literal.
-             */
+             * Pending skipped literals precede it and go first.
+             * The block boundary, if a flush follows, is strstart: everything below
+             * it has been emitted, the position at strstart is still being decided. */
+            if (UNLIKELY(pend))
+                TALLY_PENDING(strstart - 1);
             sym_next = zng_tr_tally_lit_at(s, sym_next, window[strstart-1]);
             if (UNLIKELY(sym_next == sym_end)) {
-                /* The block ends before this position is advanced past. avail_out can
-                 * only reach zero inside the flush, so it is checked just there. */
                 SYNC_STATE();
                 FLUSH_BLOCK_ONLY(s, window, 0);
                 sym_next = s->sym_next;
@@ -165,10 +203,56 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
                     SYNC_STATE();
                     return need_more;
                 }
+                goto accelerate;
+            }
+            s->prev_length = match_len;
+            strstart++;
+            lookahead--;
+
+accelerate:
+            /* Literal-run acceleration: when neither the previous nor the current
+             * position matched, skip positions without searching. The current
+             * position (now strstart-1) is a lazy literal; it becomes the pending run
+             * together with the skipped positions, which then leaves nothing lazy.
+             * The symbol buffer has room for at least one symbol here, and must keep
+             * room for the pending run plus one more. */
+            if (match_len < STD_MIN_MATCH) {
+                uint32_t skip = SKIP_STEP(++miss_run, skip_start, s->skip_shift);
+                if (UNLIKELY(skip)) {
+                    uint32_t room = SYM_ROOM(sym_next, sym_end);
+                    skip = room > 2 ? MIN(skip, room - 2) : 0;
+                    if (lookahead > MIN_LOOKAHEAD)
+                        skip = MIN(skip, lookahead - MIN_LOOKAHEAD);
+                    else
+                        skip = 0;
+                    if (skip) {
+                        if (s->skip_insert == 1) {
+                            /* Continues the hash from strstart-1, which keeps the
+                             * rolling hash consistent as well */
+                            insert_batch(s, window, strstart, skip);
+                        } else if (level < MIN_ROLL_LEVEL) {
+                            SKIP_INSERT_KNUTH(s, window, strstart, skip, s->skip_insert);
+                        } else {
+                            /* Re-seed the rolling hash for the next position */
+                            s->ins_h = update_hash_roll(window[strstart + skip], window[strstart + skip + 1]);
+                        }
+                        pend = 1 + skip;
+                        lookahead -= skip;
+                        strstart += skip;
+                        s->prev_length = 0;
+                        s->match_available = 0;
+                        if (UNLIKELY(pend >= PEND_MAX || SYM_SHORT(sym_next, sym_end, pend + 2))) {
+                            TALLY_PENDING(strstart);
+                            if (UNLIKELY(sym_next == sym_end)) {
+                                SYNC_STATE();
+                                FLUSH_BLOCK(s, window, 0);
+                                sym_next = s->sym_next;
+                            }
+                        }
+                    }
+                }
             } else {
-                s->prev_length = match_len;
-                strstart++;
-                lookahead--;
+                SKIP_HIT(miss_run);
             }
         } else {
             /* There is no previous match to compare with, wait for
@@ -182,9 +266,10 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
     }
     Assert(flush != Z_NO_FLUSH, "no flush?");
     if (UNLIKELY(s->match_available)) {
-        sym_next = zng_tr_tally_lit_at(s, sym_next, window[strstart-1]);
+        pend++;
         s->match_available = 0;
     }
+    TALLY_PENDING(strstart);
     SYNC_STATE();
     s->insert = strstart < (STD_MIN_MATCH - 1) ? strstart : (STD_MIN_MATCH - 1);
     if (UNLIKELY(flush == Z_FINISH)) {
@@ -196,4 +281,5 @@ Z_INTERNAL block_state deflate_slow(deflate_state *s, int flush) {
     return block_done;
 #undef SYNC_STATE
 #undef LOAD_STATE
+#undef TALLY_PENDING
 }

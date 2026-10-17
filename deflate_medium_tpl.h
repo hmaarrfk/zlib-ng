@@ -174,9 +174,19 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
     uint32_t lookahead = s->lookahead;
     unsigned int sym_next = s->sym_next;
     const unsigned int sym_end = s->sym_end;
+    uint32_t miss_run = s->miss_run;
+    const uint32_t skip_start = s->skip_start;
+    uint32_t pend = 0;  /* literals just before strstart that are not tallied yet */
 
-#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; } while (0)
+#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; s->miss_run = miss_run; } while (0)
 #define LOAD_STATE() do { strstart = s->strstart; lookahead = s->lookahead; sym_next = s->sym_next; } while (0)
+/* Tally the pending literals. They precede strstart in the window. */
+#define TALLY_PENDING() do { \
+        if (pend) { \
+            sym_next = zng_tr_tally_lits_at(s, sym_next, window + strstart - pend, pend); \
+            pend = 0; \
+        } \
+    } while (0)
 /* Insert the string at pos and return the previous chain head */
 #define INSERT_AT(pos, hash_head_out) do { \
         uint32_t val_ = Z_U32_FROM_LE(zng_memread_4(window + (pos))); \
@@ -202,6 +212,8 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
             PREFIX(fill_window)(s);
             LOAD_STATE();
             if (UNLIKELY(lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH)) {
+                TALLY_PENDING();
+                SYNC_STATE();
                 return need_more;
             }
             if (UNLIKELY(lookahead == 0))
@@ -280,17 +292,73 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
 #endif
 
         /* now emit the current match */
-        lookahead -= curr_match_len;
         if (LIKELY(curr_match_len == 1)) {
-            /* matches shorter than WANT_MIN_MATCH are set to 1, we need to emit these as literals */
-            sym_next = zng_tr_tally_lit_at(s, sym_next, window[current_match.strstart]);
-        } else {
-            check_match(s, current_match.strstart, current_match.match_start, curr_match_len);
-            sym_next = zng_tr_tally_dist_at(s, sym_next, current_match.strstart - current_match.match_start, curr_match_len - STD_MIN_MATCH);
-        }
+            /* matches shorter than WANT_MIN_MATCH are set to 1, we need to emit these as
+             * literals. Without fizzle the literal joins the pending run so a later match
+             * can grow over it, which pays off with the short chains of levels 3-4. With
+             * fizzle the next position has already been searched with a longer chain, so
+             * the literal is tallied right away, after any pending skipped literals that
+             * precede it, and only skipped positions are pended. */
+#ifdef USE_FIZZLE
+            if (UNLIKELY(pend))
+                TALLY_PENDING();
+            sym_next = zng_tr_tally_lit_at(s, sym_next, window[strstart]);
+#else
+            pend++;
+#endif
+            lookahead--;
+            strstart++;
 
-        /* move the "cursor" forward */
-        strstart += curr_match_len;
+            /* Literal-run acceleration: skip positions without searching. With fizzle,
+             * the next position has already been searched; only skip past it when it
+             * found nothing either, in which case it is part of the run. The symbol
+             * buffer always has room for the pending literals plus one more symbol,
+             * so the skip is bounded by that room as well. */
+            uint32_t skip = SKIP_STEP(++miss_run, skip_start, s->skip_shift);
+#ifdef USE_FIZZLE
+            if (UNLIKELY(skip) && next_match.match_length <= 1) {
+                next_match.match_length = 0;
+#else
+            if (UNLIKELY(skip)) {
+#endif
+                uint32_t room = SYM_ROOM(sym_next, sym_end);
+                skip = room > pend + 1 ? MIN(skip, room - pend - 1) : 0;
+                if (lookahead > MIN_LOOKAHEAD)
+                    skip = MIN(skip, lookahead - MIN_LOOKAHEAD);
+                else
+                    skip = 0;
+                SKIP_INSERT_KNUTH(s, window, strstart, skip, s->skip_insert);
+                pend += skip;
+                lookahead -= skip;
+                strstart += skip;
+            }
+            /* Keep the pending run bounded, and leave room for it plus one symbol */
+            if (UNLIKELY(pend >= PEND_MAX || SYM_SHORT(sym_next, sym_end, pend + 2)))
+                TALLY_PENDING();
+        } else {
+            uint32_t match_start = current_match.match_start;
+            uint32_t match_pos = current_match.strstart;
+
+            /* Grow the match backwards over the pending literals: positions that
+             * were skipped by the literal-run acceleration were never searched, and
+             * a searched position only saw its own hash chain. The end of the match,
+             * and with it any next_match, stays where it was. */
+            while (pend && curr_match_len < STD_MAX_MATCH && match_start > 0 &&
+                   window[match_pos - 1] == window[match_start - 1]) {
+                match_pos--;
+                match_start--;
+                curr_match_len++;
+                pend--;
+            }
+            strstart = match_pos;   /* the remaining pending literals end here */
+            TALLY_PENDING();
+
+            check_match(s, match_pos, match_start, curr_match_len);
+            sym_next = zng_tr_tally_dist_at(s, sym_next, match_pos - match_start, curr_match_len - STD_MIN_MATCH);
+            strstart = match_pos + curr_match_len;
+            lookahead -= current_match.match_length;
+            SKIP_HIT(miss_run);
+        }
 
         if (UNLIKELY(sym_next == sym_end)) {
             SYNC_STATE();
@@ -299,6 +367,7 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
         }
     }
 
+    TALLY_PENDING();
     SYNC_STATE();
     s->insert = strstart < (STD_MIN_MATCH - 1) ? strstart : (STD_MIN_MATCH - 1);
     if (flush == Z_FINISH) {
@@ -312,4 +381,5 @@ Z_INTERNAL block_state SUFFIX(deflate_medium)(deflate_state *s, int flush) {
 #undef SYNC_STATE
 #undef LOAD_STATE
 #undef INSERT_AT
+#undef TALLY_PENDING
 }

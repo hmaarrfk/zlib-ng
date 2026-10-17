@@ -138,6 +138,17 @@ static const config configuration_table[10] = {
  * meaning.
  */
 
+/* Literal-run acceleration per level: misses before it starts, the ramp shift
+ * (the skip grows by one position every 1 << shift further misses), and whether
+ * skipped positions are still inserted into the hash (0: no, 1: all, 2: every
+ * other). Higher levels start later, ramp more slowly and keep hashing to
+ * protect their ratio; see deflate_p.h.
+ */
+#ifndef SKIP_TABLE
+#  define SKIP_TABLE {{0,0,0},{0,0,0},{64,4,0},{64,4,0},{64,4,0},{128,5,2},{128,5,2},{256,5,1},{256,5,1},{512,5,1}}
+#endif
+static const struct { uint32_t start, shift, insert; } skip_table[10] = SKIP_TABLE;
+
 /* Level 1 uses deflate_quick, which only reads the hash chain head, so it can
  * skip prev maintenance. When quick is compiled out level 1 falls back to
  * deflate_fast, which walks the chains like every other level. */
@@ -1212,6 +1223,10 @@ static void lm_set_level(deflate_state *s, int level) {
             s->insert_batch = insert_knuth_batch;
     }
     s->level = level;
+    /* Literal-run acceleration ramps more slowly at the higher levels */
+    s->skip_start = skip_table[level].start;
+    s->skip_shift = skip_table[level].shift;
+    s->skip_insert = skip_table[level].insert;
 }
 
 /* ===========================================================================
@@ -1236,6 +1251,7 @@ static void lm_init(deflate_state *s) {
     s->match_available = 0;
     s->match_start = 0;
     s->ins_h = 0;
+    s->miss_run = 0;
 }
 
 /* ===========================================================================

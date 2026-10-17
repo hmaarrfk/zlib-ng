@@ -28,7 +28,7 @@ int main(int argc,char**argv){
         if(tuned) zng_deflateTune(&s,good,lazy,nice,chain);
         double best=1e9; size_t clen=0;
         for(int pass=0;pass<2;pass++){
-            zng_deflateReset(&s); s.next_in=d;s.avail_in=n;s.next_out=c;s.avail_out=cap;
+            zng_deflateReset(&s); if(tuned) zng_deflateTune(&s,good,lazy,nice,chain); s.next_in=d;s.avail_in=n;s.next_out=c;s.avail_out=cap;
             double t0=now(); if(zng_deflate(&s,Z_FINISH)!=Z_STREAM_END){fprintf(stderr,"err\n");return 3;}
             double dt=now()-t0; if(dt<best)best=dt; clen=s.total_out;
         }

@@ -36,13 +36,21 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
     unsigned int sym_next = s->sym_next;
     const unsigned int sym_end = s->sym_end;
     uint32_t match_len = 0;
+    uint32_t miss_run = s->miss_run;
+    const uint32_t skip_start = s->skip_start;
+    uint32_t pend = 0;  /* literals just before strstart that are not tallied yet */
 
-#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; } while (0)
+#define SYNC_STATE() do { s->strstart = strstart; s->lookahead = lookahead; s->sym_next = sym_next; s->miss_run = miss_run; } while (0)
 #define LOAD_STATE() do { strstart = s->strstart; lookahead = s->lookahead; sym_next = s->sym_next; } while (0)
+/* Tally the pending literals. They precede strstart in the window. */
+#define TALLY_PENDING() do { \
+        if (pend) { \
+            sym_next = zng_tr_tally_lits_at(s, sym_next, window + strstart - pend, pend); \
+            pend = 0; \
+        } \
+    } while (0)
 
     for (;;) {
-        uint8_t lc;
-
         /* Make sure that we always have enough lookahead, except
          * at the end of the input file. We need STD_MAX_MATCH bytes
          * for the next match, plus WANT_MIN_MATCH bytes to insert the
@@ -53,6 +61,8 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
             PREFIX(fill_window)(s);
             LOAD_STATE();
             if (UNLIKELY(lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH)) {
+                TALLY_PENDING();
+                SYNC_STATE();
                 return need_more;
             }
             if (UNLIKELY(lookahead == 0))
@@ -72,8 +82,6 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
                 prev[strstart & w_mask] = (Pos)hash_head;
                 head[h] = (Pos)strstart;
             }
-            lc = (uint8_t)str_val;
-
             /* Find the longest match.
              * At this point we have always match length < WANT_MIN_MATCH
              */
@@ -88,16 +96,29 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
                 match_len = FUNCTABLE_CALL(longest_match)(s, hash_head);
                 /* longest_match() sets match_start */
             }
-        } else {
-            lc = window[strstart];
         }
 
         if (match_len >= WANT_MIN_MATCH) {
-            Assert(strstart <= UINT16_MAX, "strstart should fit in uint16_t");
-            Assert(s->match_start <= UINT16_MAX, "match_start should fit in uint16_t");
-            check_match(s, strstart, s->match_start, match_len);
+            uint32_t match_start = s->match_start;
 
-            sym_next = zng_tr_tally_dist_at(s, sym_next, strstart - s->match_start, match_len - STD_MIN_MATCH);
+            /* Grow the match backwards over the pending literals: positions that
+             * were skipped by the literal-run acceleration were never searched, and
+             * a searched position only saw its own hash chain. */
+            while (pend && match_len < STD_MAX_MATCH && match_start > 0 &&
+                   window[strstart - 1] == window[match_start - 1]) {
+                strstart--;
+                match_start--;
+                match_len++;
+                lookahead++;
+                pend--;
+            }
+            TALLY_PENDING();
+
+            Assert(strstart <= UINT16_MAX, "strstart should fit in uint16_t");
+            Assert(match_start <= UINT16_MAX, "match_start should fit in uint16_t");
+            check_match(s, strstart, match_start, match_len);
+
+            sym_next = zng_tr_tally_dist_at(s, sym_next, strstart - match_start, match_len - STD_MIN_MATCH);
 
             lookahead -= match_len;
 
@@ -119,11 +140,32 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
                  */
             }
             match_len = 0;
+            SKIP_HIT(miss_run);
         } else {
-            /* No match, output a literal byte */
-            sym_next = zng_tr_tally_lit_at(s, sym_next, lc);
+            /* No match, the byte becomes a pending literal */
+            pend++;
             lookahead--;
             strstart++;
+
+            /* Literal-run acceleration: skip positions without searching. The
+             * symbol buffer always has room for the pending literals plus one more
+             * symbol, so the skip is bounded by that room as well. */
+            uint32_t skip = SKIP_STEP(++miss_run, skip_start, s->skip_shift);
+            if (UNLIKELY(skip)) {
+                uint32_t room = SYM_ROOM(sym_next, sym_end);
+                skip = room > pend + 1 ? MIN(skip, room - pend - 1) : 0;
+                if (lookahead > MIN_LOOKAHEAD)
+                    skip = MIN(skip, lookahead - MIN_LOOKAHEAD);
+                else
+                    skip = 0;
+                SKIP_INSERT_KNUTH(s, window, strstart, skip, s->skip_insert);
+                pend += skip;
+                lookahead -= skip;
+                strstart += skip;
+            }
+            /* Keep the pending run bounded, and leave room for it plus one symbol */
+            if (UNLIKELY(pend >= PEND_MAX || SYM_SHORT(sym_next, sym_end, pend + 2)))
+                TALLY_PENDING();
         }
         if (UNLIKELY(sym_next == sym_end)) {
             SYNC_STATE();
@@ -131,6 +173,7 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
             sym_next = s->sym_next;
         }
     }
+    TALLY_PENDING();
     SYNC_STATE();
     s->insert = strstart < (STD_MIN_MATCH - 1) ? strstart : (STD_MIN_MATCH - 1);
 
@@ -141,6 +184,7 @@ Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
     if (UNLIKELY(s->sym_next))
         FLUSH_BLOCK(s, window, 0);
     return block_done;
+#undef TALLY_PENDING
 #undef SYNC_STATE
 #undef LOAD_STATE
 }
