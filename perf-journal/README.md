@@ -44,3 +44,61 @@ random/realistic_rgb at level 2 1.26-1.32x, random at level 9 1.34x.
 Level 6 on text barely moves because two thirds of its time is inside
 longest_match, which this step does not touch. Noise floor observed between
 untouched inflate benchmarks: about +-8%.
+
+### Finding: deflateTune() parameter sweep at levels 6-9 (no code change)
+
+Before changing the match finder, `tune.c` swept good/lazy/nice/chain over
+silesia + canterbury (95 MB). Chain depth is not where the time goes: at level
+6, chain 32 instead of 128 costs 0.3% ratio for 1.18x; chain 16 costs 0.7% for
+1.29x. Levels 7-9 behave the same (chain 256 at level 9: 1.09x for 0.03%).
+Nothing here gives a multiple, so the level table was left alone. The sweep
+output is reproduced in `sweep.sh`.
+
+### 002 literal-run acceleration (kept, changes encoded output)
+
+Incompressible or barely compressible input (random bytes, already compressed
+payloads, noisy images) paid a hash insert, a chain-head lookup and a
+longest_match call per byte, most of it cache misses, and then emitted every
+byte as a literal anyway. The fast, medium and slow strategies now count
+consecutive positions searched without a match; after `skip_start` of them
+they advance over extra positions without searching, the step growing by one
+every `1 << skip_shift` misses up to 32, and the count resets on any match.
+Skipped literals are tallied lazily so that the next match found can grow
+backwards over them (the same trick LZ4 uses), and per level the skipped
+positions are either not hashed at all (levels 2-4), hashed every other one
+(5-6) or all hashed (7-9), which is what keeps the ratio at the higher levels.
+Levels 3-4 also tally searched literals lazily and grow matches over them,
+which recovers ratio on text at the cost of nothing. The per-level table is
+`skip_table` in deflate.c.
+
+Verification: full test suite, an AddressSanitizer build over the corpus at
+every level (an earlier draft had a symbol-buffer underflow that ASan + the
+difftest round trip caught), and `difftest` round trips of 11 files x 475
+parameter/IO combinations with 0 failures.
+
+Speed (tune.c, best of 2, MB/s) and ratio on silesia + canterbury, 95 MB:
+
+| level | baseline ratio | new ratio | baseline MB/s | new MB/s |
+|---|---|---|---|---|
+| 2 | 2.3082 | 2.3011 (-0.31%) | 282 | 347 (1.23x) |
+| 3 | 2.3891 | 2.3798 (-0.39%) | 237 | 281 (1.19x) |
+| 4 | 2.4273 | 2.4179 (-0.39%) | 206 | 236 (1.15x) |
+| 5 | 2.4555 | 2.4545 (-0.04%) | 203 | 208 (1.03x) |
+| 6 | 2.4651 | 2.4641 (-0.04%) | 172 | 176 (1.03x) |
+| 7 | 2.4830 | 2.4823 (-0.03%) | 125 | 138 (1.10x) |
+| 8 | 2.4862 | 2.4857 (-0.02%) | 110 | 120 (1.09x) |
+| 9 | 2.5127 | 2.5127 (+0.00%) | 82 | 87 (1.06x) |
+
+Per file, ratio change and speedup vs. baseline (levels 2 / 6 / 9):
+random bytes 0% / 0% / 0% at 10.4x / 5.8x / 4.1x; fireworks.jpg 0% at 8.8x /
+4.9x / 1.5x; mozilla -0.94% / -0.23% / +0.02% at 2.2x / 1.4x / 1.2x;
+x-ray -1.9% / -0.04% / 0% at 1.7x / 0.96x / 1.09x; geo -1.1% / -0.04% / 0% at
+1.5x / 1.0x / 1.0x; dickens +0.25% / 0% / 0% at 1.04x / 0.99x / 1.03x.
+The losses on x-ray and geo at levels 2-4 are the price of not hashing the
+skipped positions; hashing them (as levels 7-9 do) halves the gain on random
+data. The default level trades nothing measurable on regular data and is
+3-4% slower only on x-ray, which engages the acceleration without benefiting.
+
+Quick-tier geomeans vs. baseline: deflate L1-3 1.51x, L6-9 1.20x, strategies
+1.22x, inflate/checksums unchanged. The strategy family moves because
+Z_FILTERED and Z_FIXED go through the same loops.
