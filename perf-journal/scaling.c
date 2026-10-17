@@ -16,6 +16,14 @@
 #include <time.h>
 #include <unistd.h>
 #include "zlib-ng.h"
+#ifdef __APPLE__
+#  include <pthread.h>
+#  include <sys/qos.h>
+/* Ask for a performance core; otherwise macOS may run the loop on an efficiency core */
+#  define PIN_PERFORMANCE_CORE() pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+#else
+#  define PIN_PERFORMANCE_CORE() do {} while (0)
+#endif
 
 #define RUN_SECONDS 0.6
 
@@ -35,6 +43,7 @@ struct job {
 
 static void *worker(void *arg) {
     struct job *j = arg;
+    PIN_PERFORMANCE_CORE();
     zng_stream strm; memset(&strm, 0, sizeof(strm));
     if (j->level >= 0)
         zng_deflateInit2(&strm, j->level, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY);

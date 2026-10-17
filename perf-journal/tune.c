@@ -11,8 +11,17 @@
 #include <stdint.h>
 #include <time.h>
 #include "zlib-ng.h"
+#ifdef __APPLE__
+#  include <pthread.h>
+#  include <sys/qos.h>
+/* Ask for a performance core; otherwise macOS may run the loop on an efficiency core */
+#  define PIN_PERFORMANCE_CORE() pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+#else
+#  define PIN_PERFORMANCE_CORE() do {} while (0)
+#endif
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec*1e-9;}
 int main(int argc,char**argv){
+    PIN_PERFORMANCE_CORE();
     if(argc<4){fprintf(stderr,"usage\n");return 2;}
     int level=atoi(argv[1]); int argi; int tuned=0; int good=0,lazy=0,nice=0,chain=0;
     if(strcmp(argv[2],"default")==0){argi=3;} else {tuned=1;good=atoi(argv[2]);lazy=atoi(argv[3]);nice=atoi(argv[4]);chain=atoi(argv[5]);argi=6;}
@@ -27,7 +36,7 @@ int main(int argc,char**argv){
         zng_deflateInit2(&s,level,Z_DEFLATED,-15,8,0);
         if(tuned) zng_deflateTune(&s,good,lazy,nice,chain);
         double best=1e9; size_t clen=0;
-        for(int pass=0;pass<2;pass++){
+        for(int pass=0;pass<3;pass++){
             zng_deflateReset(&s); if(tuned) zng_deflateTune(&s,good,lazy,nice,chain); s.next_in=d;s.avail_in=n;s.next_out=c;s.avail_out=cap;
             double t0=now(); if(zng_deflate(&s,Z_FINISH)!=Z_STREAM_END){fprintf(stderr,"err\n");return 3;}
             double dt=now()-t0; if(dt<best)best=dt; clen=s.total_out;

@@ -6,8 +6,17 @@
 #include <stdint.h>
 #include <time.h>
 #include "zlib-ng.h"
+#ifdef __APPLE__
+#  include <pthread.h>
+#  include <sys/qos.h>
+/* Ask for a performance core; otherwise macOS may run the loop on an efficiency core */
+#  define PIN_PERFORMANCE_CORE() pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+#else
+#  define PIN_PERFORMANCE_CORE() do {} while (0)
+#endif
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec*1e-9;}
 int main(int argc,char**argv){
+    PIN_PERFORMANCE_CORE();
     if(argc<3){fprintf(stderr,"usage\n");return 2;}
     FILE*f=fopen(argv[1],"rb"); if(!f){perror(argv[1]);return 2;}
     fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET);
