@@ -35,25 +35,30 @@ below says so. The last two steps measure head and the baseline commit back
 to back (the machine drifted 4-6% slower over the session, so the earlier
 per-step numbers against the first baseline run are slightly pessimistic).
 
-Paired full-tier measurement, head (step 009) vs. baseline rerun (009b):
+Paired full-tier measurement, head (step 009) vs. baseline rerun (009b).
+Each cell is the speedup, then the compression ratio baseline → head (raw
+deflate, whole files, `ratio.c`, step 010; corpus rows are total input bytes
+over total output bytes, so large files weigh more than in the speed
+geomean; a ratio change is shown only when it is at least 0.05%):
 
 | input | L1 | L2 | L3 | L6 | L8 | L9 |
 |---|---|---|---|---|---|---|
-| random bytes, 1 MiB | 17x (tune.c) | 6.8x | 7.2x | 4.8x | - | 4.0x |
-| realistic_rgb (noisy image), 1 MiB | - | 5.6x | 5.8x | 1.03x | - | 1.18x |
-| JPEG (tune.c, 123 KiB) | 28x | 8.8x | 8.6x | 4.9x | 4.9x | 1.5x |
-| mozilla (tune.c, 8 MiB) | 1.8x | 2.1x | 2.0x | 1.4x | 1.5x | 1.2x |
-| silesia, geomean of 12 files | 1.00x | - | 1.09x | 1.00x | 1.10x | 1.05x |
-| canterbury, geomean of 11 | 0.99x | - | 0.98x | 1.01x | 1.14x | 1.01x |
-| calgary, geomean of 18 | 0.98x | - | 1.02x | 1.02x | 1.07x | 1.04x |
-| text, 1 MiB synthetic | 0.97x | 1.00x | 1.01x | 0.99x | - | 1.02x |
+| random bytes, 1 MiB | 17x · 0.948 → 0.999 (+5.37%) | 6.8x · 1.000 → 1.000 | 7.2x · 1.000 → 1.000 | 4.8x · 1.000 → 1.000 | - · 1.000 → 1.000 | 4.0x · 1.000 → 1.000 |
+| realistic_rgb (noisy image), 1 MiB | - · 1.009 → 1.006 (-0.30%) | 5.6x · 1.297 → 1.280 (-1.38%) | 5.8x · 1.298 → 1.280 (-1.39%) | 1.03x · 1.298 → 1.295 (-0.24%) | - · 1.298 → 1.298 | 1.18x · 1.375 → 1.375 |
+| JPEG, 123 KiB | 28x · 0.950 → 0.999 (+5.11%) | 8.8x · 1.002 → 1.002 | 8.6x · 1.002 → 1.002 | 4.9x · 1.002 → 1.002 | 4.9x · 1.002 → 1.002 | 1.5x · 1.002 → 1.002 |
+| silesia/mozilla, 51 MB | 1.8x · 2.135 → 2.137 (+0.12%) | 2.1x · 2.493 → 2.488 (-0.21%) | 2.0x · 2.574 → 2.568 (-0.22%) | 1.4x · 2.638 → 2.636 (-0.06%) | 1.5x · 2.648 → 2.647 (-0.06%) | 1.2x · 2.691 → 2.691 |
+| silesia, 12 files | 1.00x · 2.248 → 2.247 | - · 2.809 → 2.807 (-0.08%) | 1.09x · 2.944 → 2.937 (-0.24%) | 1.00x · 3.068 → 3.068 | 1.10x · 3.102 → 3.101 | 1.05x · 3.128 → 3.128 |
+| canterbury, 11 files | 0.99x · 2.442 → 2.442 | - · 3.444 → 3.449 (+0.17%) | 0.98x · 3.642 → 3.643 | 1.01x · 3.767 → 3.767 | 1.14x · 3.863 → 3.862 | 1.01x · 3.846 → 3.846 |
+| calgary, 18 files | 0.98x · 2.071 → 2.071 | - · 2.768 → 2.773 (+0.19%) | 1.02x · 2.921 → 2.919 (-0.08%) | 1.02x · 3.026 → 3.026 | 1.07x · 3.066 → 3.066 | 1.04x · 3.063 → 3.063 |
+| synthetic text, 1 MiB | 0.97x · 2.486 → 2.486 | 1.00x · 3.338 → 3.343 (+0.16%) | 1.01x · 3.557 → 3.557 | 0.99x · 3.854 → 3.854 | - · 3.962 → 3.960 | 1.02x · 3.907 → 3.907 |
 
 Inflate 0.98-1.02x (untouched), checksums untouched, Huffman-only/RLE
 strategies untouched, thread scaling unchanged (the library is single
-threaded; `plots/scaling.png`). Ratio: unchanged at levels 5-9 within
-0.04% on the corpus, -0.3/-0.4% at levels 2-4, unchanged at level 1 (and no
-longer expanding incompressible input by 5%); per-file worst cases are
-x-ray and geo at levels 2-4 (-1.0% / -1.9%).
+threaded; `plots/scaling.png`). Ratio: levels 6-9 within 0.06% on every
+corpus; levels 2-3 give up to 0.24% on silesia and 1.4% on the noisy RGB
+image; level 1 is unchanged on compressible input and no longer expands
+incompressible input by 5%. Worst single files are x-ray and geo at levels
+2-3 (-1.9% / -1.2%); no other corpus file loses more than 0.25%.
 
 Why not more on compressible input: at the default level two thirds of the
 time is the hash-chain walk at one L1 load latency per candidate, the
@@ -321,3 +326,17 @@ commit was built from a worktree and measured again right after head
 (009b), and `plots/paired-009-full-tier-final.png` plus the table at the top
 compare the two. bench.sh gained `PERF_SOURCE_DIR` and `PERF_SKIP_TESTS` for
 that, and plot.py pairs any `*-baseline-rerun` result with the step before it.
+
+### 010 compression ratio next to every speedup (measurement only)
+
+The benchmark suite has no ratio gate, so `ratio.c` (new, linked against the
+baseline and head static libraries) compresses every whole file of the
+summary table at levels 1/2/3/6/8/9 and records input and output bytes in
+`results/010-ratio-baseline.txt` and `results/010-ratio-head.txt`. The
+synthetic inputs are the `test/test_data_p.h` generators (text, random,
+realistic_rgb) dumped to files, so they are the benchmark's data. The
+combined table at the top is built from these two files. Findings: the only
+ratio changes above 0.3% are levels 2-3 on the noisy RGB image (-1.4%),
+x-ray (-1.9%) and geo (-1.2%), all input where the literal-run skip fires on
+data that still has sparse short matches; level 1 on incompressible input
+gains 5% because it now emits stored blocks.
