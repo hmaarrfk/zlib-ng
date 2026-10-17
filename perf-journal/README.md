@@ -191,3 +191,16 @@ samba -0.06%, x-ray level 2 -1.0% instead of -1.9% thanks to the stride
 hashing). The price of hashing every 2nd skipped position at levels 2-4 is
 visible on incompressible data: random bytes at level 2 run at 450 MB/s
 instead of 1.5-2 GB/s. The next step revisits that trade.
+
+### 006 levels 2-4: do not hash skipped positions (kept)
+
+Reverses the one part of step 005 that cost the most: at levels 2-4 the
+skipped positions are not hashed again (as in step 002); levels 5-6 keep
+every 2nd, 7-9 keep all. Random bytes at level 2: 1.3-1.6 GB/s (10x) instead
+of 450 MB/s, JPEG 1.4 GB/s; x-ray and geo at levels 2-4 return to -1.0% /
+-1.9% ratio, mozilla to -0.5 / -0.9%. Quick-tier geomeans: deflate L1-3
+1.48x, L6-9 1.22x, strategies 1.21x.
+
+Noise note: the first run of a freshly built binary on random data came out
+at 720 MB/s; five repeats gave 1.30-1.57 GB/s. Single numbers on
+incompressible data carry about +-10%.

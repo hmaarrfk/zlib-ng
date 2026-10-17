@@ -145,7 +145,7 @@ static const config configuration_table[10] = {
  * their ratio; see deflate_p.h.
  */
 #ifndef SKIP_TABLE
-#  define SKIP_TABLE {{0,0,0},{64,4,1},{64,4,2},{64,4,2},{64,4,2},{128,5,2},{128,5,2},{256,5,1},{256,5,1},{512,5,1}}
+#  define SKIP_TABLE {{0,0,0},{64,4,1},{64,4,0},{64,4,0},{64,4,0},{128,5,2},{128,5,2},{256,5,1},{256,5,1},{512,5,1}}
 #endif
 static const struct { uint32_t start, shift, insert; } skip_table[10] = SKIP_TABLE;
 
