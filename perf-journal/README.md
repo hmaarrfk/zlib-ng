@@ -102,3 +102,36 @@ data. The default level trades nothing measurable on regular data and is
 Quick-tier geomeans vs. baseline: deflate L1-3 1.51x, L6-9 1.20x, strategies
 1.22x, inflate/checksums unchanged. The strategy family moves because
 Z_FILTERED and Z_FIXED go through the same loops.
+
+### 003 level 1: literal-run skip and stored-block mode (kept, changes encoded output)
+
+Level 1 (deflate_quick) codes everything with the static Huffman tree, so on
+incompressible input it ran at 135-240 MB/s and *expanded* the data by 5%
+(ratio 0.948 on random bytes and JPEG). It now has the same literal-run skip as
+the other levels (skipped positions are still hashed, head only, which is
+cheap here), and after 512 consecutive misses it probes the next stretch
+(one hash lookup every 16 bytes, up to 8 KiB); when fewer than one probe in
+64 finds a match the stretch is copied as a stored block and the static block
+is reopened afterwards. To make that possible in one-shot Z_FINISH calls, the
+final block is no longer opened eagerly: a Z_FINISH call opens an ordinary
+block unless the remaining input is too small for stored mode to matter, and
+the stream then ends with an empty final static block (10 bits). An earlier
+draft appended a stored block while a partial flush had left data in the
+pending buffer, which corrupts the stream in small-output-buffer streaming;
+the difftest round trips caught it.
+
+Level 1, per file (ratio, MB/s), baseline -> new: random 0.948 @ 134 ->
+0.999 @ 2351 (17.6x); fireworks.jpg 0.950 @ 135 -> 0.999 @ 3847 (28x);
+mozilla 1.5435 @ 353 -> 1.5535 @ 640 (1.8x, and smaller); x-ray 1.0758 @ 262
+-> 1.0667 @ 285 (-0.85% ratio); geo -0.4%; sao/osdb/ooffice/webster/dickens
+unchanged ratio at 0.96-0.98x speed (the per-literal miss counter costs about
+one cycle in a loop of ten). Corpus total at level 1: 446 -> 475 MB/s, ratio
+1.8593 -> 1.8590.
+
+Measurement note: from this step on the drivers (tune.c, loop.c, scaling.c)
+request a performance core via QoS; before that, runs landing on an
+efficiency core produced 10-20% swings between identical binaries.
+
+The quick-tier geomeans do not show this step because the suite only runs
+levels 2-9 on the non-text data types; the "deflate L1-3" family is
+unchanged at 1.50x.
