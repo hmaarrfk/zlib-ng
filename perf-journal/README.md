@@ -28,3 +28,19 @@ Plots:
 
 ## Steps
 
+### 001 register-resident loop state (kept)
+
+The deflate_fast / deflate_medium / deflate_slow loops kept strstart,
+lookahead, sym_next and the hash-table pointers in the state struct. The symbol
+buffer is written with byte-typed (memcpy) stores, which the compiler must
+assume alias every field of the struct, so all of those were reloaded from
+memory after every symbol and the loop carried a store-to-load dependency
+through memory. They now live in locals and are written back only before
+calls that read the state. Output is byte-identical (difftest: identical).
+
+Result (quick tier, geomean vs. baseline): deflate L1-3 1.11x, L6-9 1.05x,
+strategies 1.04x, inflate unchanged. Largest gains on literal-heavy input:
+random/realistic_rgb at level 2 1.26-1.32x, random at level 9 1.34x.
+Level 6 on text barely moves because two thirds of its time is inside
+longest_match, which this step does not touch. Noise floor observed between
+untouched inflate benchmarks: about +-8%.
