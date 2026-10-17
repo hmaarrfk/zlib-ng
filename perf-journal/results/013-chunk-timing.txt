@@ -1,0 +1,80 @@
+== L9 raw out=64
+dickens        base    420  head    879  2.09x
+mozilla        base    552  head    891  1.61x
+xml            base   1029  head   2021  1.96x
+x-ray          base    427  head    547  1.28x
+kennedy.xls    base   1259  head   1921  1.53x
+text1m.bin     base    598  head   1287  2.15x
+rgb1m.bin      base    338  head    414  1.22x
+== L9 gzip out=64
+dickens        base    411  head    863  2.10x
+mozilla        base    512  head    834  1.63x
+xml            base    956  head   1811  1.89x
+x-ray          base    420  head    513  1.22x
+kennedy.xls    base   1195  head   1826  1.53x
+text1m.bin     base    555  head   1277  2.30x
+rgb1m.bin      base    326  head    395  1.21x
+== L9 raw out=512
+dickens        base    583  head    895  1.54x
+mozilla        base    703  head    954  1.36x
+xml            base   1600  head   2421  1.51x
+x-ray          base    508  head    571  1.12x
+kennedy.xls    base   1889  head   2229  1.18x
+text1m.bin     base    905  head   1442  1.59x
+rgb1m.bin      base    387  head    427  1.10x
+== L9 gzip out=512
+dickens        base    607  head    919  1.51x
+mozilla        base    687  head    924  1.34x
+xml            base   1511  head   2234  1.48x
+x-ray          base    497  head    561  1.13x
+kennedy.xls    base   1748  head   2080  1.19x
+text1m.bin     base    853  head   1387  1.63x
+rgb1m.bin      base    386  head    422  1.09x
+== L9 raw out=2048
+dickens        base    809  head    952  1.18x
+mozilla        base    826  head    966  1.17x
+xml            base   1962  head   2430  1.24x
+x-ray          base    536  head    566  1.06x
+kennedy.xls    base   2159  head   2288  1.06x
+text1m.bin     base   1190  head   1462  1.23x
+rgb1m.bin      base    402  head    419  1.04x
+== L9 gzip out=2048
+dickens        base    793  head    939  1.18x
+mozilla        base    812  head    950  1.17x
+xml            base   1949  head   2371  1.22x
+x-ray          base    528  head    566  1.07x
+kennedy.xls    base   2093  head   2215  1.06x
+text1m.bin     base   1181  head   1438  1.22x
+rgb1m.bin      base    394  head    427  1.08x
+== L9 raw out=4096
+dickens        base    826  head    824  1.00x
+mozilla        base    851  head    850  1.00x
+xml            base   2062  head   2088  1.01x
+x-ray          base    520  head    508  0.98x
+kennedy.xls    base   2177  head   2114  0.97x
+text1m.bin     base   1226  head   1183  0.96x
+rgb1m.bin      base    401  head    397  0.99x
+== L9 gzip out=4096
+dickens        base    823  head    818  0.99x
+mozilla        base    847  head    847  1.00x
+xml            base   2021  head   2020  1.00x
+x-ray          base    528  head    526  1.00x
+kennedy.xls    base   2163  head   2163  1.00x
+text1m.bin     base   1208  head   1189  0.98x
+rgb1m.bin      base    401  head    400  1.00x
+== L9 raw out=65536
+dickens        base   1175  head   1177  1.00x
+mozilla        base   1052  head   1043  0.99x
+xml            base   2807  head   2863  1.02x
+x-ray          base    695  head    692  1.00x
+kennedy.xls    base   2340  head   2253  0.96x
+text1m.bin     base   1808  head   1771  0.98x
+rgb1m.bin      base    501  head    477  0.95x
+== L9 gzip out=65536
+dickens        base   1173  head   1179  1.01x
+mozilla        base   1050  head   1046  1.00x
+xml            base   2821  head   2827  1.00x
+x-ray          base    696  head    696  1.00x
+kennedy.xls    base   2324  head   2319  1.00x
+text1m.bin     base   1792  head   1762  0.98x
+rgb1m.bin      base    496  head    498  1.00x

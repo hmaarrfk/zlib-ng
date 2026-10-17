@@ -115,6 +115,7 @@ struct ALIGNED_(64) inflate_state {
     uint32_t wbufsize;          /* real size of the allocated window buffer, including padding */
     uint32_t whave;             /* valid bytes in the window */
     uint32_t wnext;             /* window write index */
+    uint32_t wpend;             /* decoded bytes in the window not yet delivered */
     unsigned char *window;      /* allocated sliding window, if needed */
 
         /* bit accumulator */

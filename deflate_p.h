@@ -54,6 +54,81 @@ static inline void check_match(deflate_state *s, uint32_t start, uint32_t match,
 Z_INTERNAL void PREFIX(flush_pending)(PREFIX3(stream) *strm);
 
 /* ===========================================================================
+ * Literal-run acceleration. Data that does not compress (random bytes, already
+ * compressed payloads, noisy images) still pays a hash insert, a chain-head
+ * lookup and a longest_match call per byte, most of it cache misses, and then
+ * emits every byte as a literal anyway. After skip_start consecutive positions
+ * without a match the strategies emit extra literals without searching, the
+ * count growing by one every 1 << skip_shift misses up to SKIP_MAX, and halved
+ * whenever a match is found. Both parameters come from the level table. Matches that start inside a skipped stretch
+ * are missed, which costs a little ratio only on data that was barely
+ * compressing to begin with.
+ */
+#define SKIP_MAX   32
+/* Literals are tallied lazily so that a later match can grow backwards over them;
+ * at most this many are held back. */
+#define PEND_MAX   64
+
+/* Stored-block mode of deflate_quick: once this many consecutive positions
+ * found no match, a stretch of the input is probed and, if it looks
+ * incompressible, copied as a stored block instead of being coded literal by
+ * literal. (The hashing strategies tried the same in journal step 004 and it
+ * was rolled back: their block coder already chooses stored blocks where they
+ * win, and deciding earlier lost ratio on mixed input.) */
+#define STORED_MODE_MISSES 512
+#define STORED_CHUNK_MIN   1024
+#define STORED_CHUNK_MAX   8192
+/* deflate_quick has no block coder to ask, so it probes: one lookup every
+ * PROBE_STRIDE bytes, and the stretch is stored when fewer than one probe in
+ * STORED_MAX_HITS finds a match */
+#define PROBE_STRIDE       16
+#define STORED_MAX_HITS    64
+
+/* Number of positions to emit as literals without searching, given the miss count */
+#define SKIP_STEP(s, miss_run, skip_start) \
+    (((miss_run) > (skip_start)) ? MIN(((miss_run) - (skip_start)) >> (s)->skip_shift, (uint32_t)SKIP_MAX) : 0u)
+
+/* A match ends the run */
+#define SKIP_HIT(miss_run) ((miss_run) = 0)
+
+/* Hash every stride-th position of a stretch that the strategy does not
+ * search (skipped or stored), so that later matches can still point into it;
+ * a match that starts between two hashed positions is recovered by the
+ * backward growth over pending literals. stride 0 hashes nothing. */
+void Z_INTERNAL zng_deflate_insert_stride(deflate_state *s, unsigned char *window, uint32_t start, uint32_t n, uint32_t stride);
+
+#define SKIP_INSERT_KNUTH(s, window, pos, n, stride) do { \
+        if ((stride) == 1) \
+            insert_knuth_batch_static(s, window, pos, n); \
+        else if (stride) \
+            zng_deflate_insert_stride(s, window, pos, n, stride); \
+    } while (0)
+
+/* Number of positions to emit as literals without searching, given the miss count */
+#define SKIP_STEP(s, miss_run, skip_start) \
+    (((miss_run) > (skip_start)) ? MIN(((miss_run) - (skip_start)) >> (s)->skip_shift, (uint32_t)SKIP_MAX) : 0u)
+
+/* A match ends the run */
+#define SKIP_HIT(miss_run) ((miss_run) = 0)
+
+/* Hash the positions skipped by the acceleration according to the level's
+ * insert policy, so that later matches can still point into the skipped run.
+ * The knuth variant is for levels below MIN_ROLL_LEVEL. */
+
+/* Number of symbols that still fit in the symbol buffer, and the buffer bytes
+ * that n symbols take */
+#ifdef LIT_MEM
+#  define SYM_ROOM(sym_next, sym_end) ((sym_end) - (sym_next))
+#  define SYM_BYTES(n) (n)
+#else
+#  define SYM_ROOM(sym_next, sym_end) (((sym_end) - (sym_next)) / 3)
+#  define SYM_BYTES(n) ((n) * 3)
+#endif
+/* True when fewer than n symbols fit in the symbol buffer */
+#define SYM_SHORT(sym_next, sym_end, n) ((sym_end) - (sym_next) < SYM_BYTES(n))
+
+
+/* ===========================================================================
  * Save the match info and tally the frequency counts. Return true if
  * the current block must be flushed.
  */
@@ -114,6 +189,74 @@ static inline int zng_tr_tally_dist(deflate_state* s, uint32_t dist, uint32_t le
     s->dyn_ltree[zng_length_code[len] + LITERALS + 1].Freq++;
     s->dyn_dtree[d_code(dist)].Freq++;
     return (s->sym_next == s->sym_end);
+}
+
+/* ===========================================================================
+ * Register-resident variants of the tally functions. The symbol buffer write
+ * goes through memcpy-style byte access, which forces the compiler to assume
+ * it may alias every field of the deflate state, so a loop that keeps sym_next
+ * in the state reloads it (and everything else it holds) after every symbol.
+ * These take sym_next by value and return the new value, so the caller keeps
+ * it in a register and only the frequency counter touches memory. The caller
+ * must store it back into s->sym_next before anything reads the state.
+ */
+Z_FORCEINLINE static unsigned int zng_tr_tally_lit_at(deflate_state *s, unsigned int sym_next, unsigned char c) {
+#ifdef LIT_MEM
+    s->d_buf[sym_next] = 0;
+    s->l_buf[sym_next] = c;
+    sym_next += 1;
+#else
+#  if OPTIMAL_CMP >= 32
+    zng_memwrite_4(&s->sym_buf[sym_next], Z_U32_TO_LE((uint32_t)c << 16));
+#  else
+    s->sym_buf[sym_next] = 0;
+    s->sym_buf[sym_next+1] = 0;
+    s->sym_buf[sym_next+2] = c;
+#  endif
+    sym_next += 3;
+#endif
+    s->dyn_ltree[c].Freq++;
+    Tracevv((stderr, "%c", c));
+    return sym_next;
+}
+
+Z_FORCEINLINE static unsigned int zng_tr_tally_dist_at(deflate_state *s, unsigned int sym_next, uint32_t dist, uint32_t len) {
+#ifdef LIT_MEM
+    Assert(dist <= UINT16_MAX, "dist should fit in uint16_t");
+    Assert(len <= UINT8_MAX, "len should fit in uint8_t");
+    s->d_buf[sym_next] = (uint16_t)dist;
+    s->l_buf[sym_next] = (uint8_t)len;
+    sym_next += 1;
+#else
+#  if OPTIMAL_CMP >= 32
+    zng_memwrite_4(&s->sym_buf[sym_next], Z_U32_TO_LE(dist | ((uint32_t)len << 16)));
+#  else
+    s->sym_buf[sym_next] = (uint8_t)(dist);
+    s->sym_buf[sym_next+1] = (uint8_t)(dist >> 8);
+    s->sym_buf[sym_next+2] = (uint8_t)len;
+#  endif
+    sym_next += 3;
+#endif
+    dist--;
+    Assert(dist < MAX_DIST(s) && (uint16_t)d_code(dist) < (uint16_t)D_CODES,
+        "zng_tr_tally: bad match");
+
+    s->dyn_ltree[zng_length_code[len] + LITERALS + 1].Freq++;
+    s->dyn_dtree[d_code(dist)].Freq++;
+    return sym_next;
+}
+
+/* Tally n consecutive literals starting at p. The caller guarantees room for them. */
+Z_FORCEINLINE static unsigned int zng_tr_tally_lits_at(deflate_state *s, unsigned int sym_next, const unsigned char *p, uint32_t n) {
+    Assert(n <= SYM_ROOM(sym_next, s->sym_end), "pending literals overflow the symbol buffer");
+    /* One or two literals between matches is the common case on compressible data */
+    sym_next = zng_tr_tally_lit_at(s, sym_next, p[0]);
+    if (n == 1)
+        return sym_next;
+    sym_next = zng_tr_tally_lit_at(s, sym_next, p[1]);
+    for (uint32_t i = 2; i < n; i++)
+        sym_next = zng_tr_tally_lit_at(s, sym_next, p[i]);
+    return sym_next;
 }
 
 /* =========================================================================

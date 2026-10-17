@@ -1,0 +1,90 @@
+== threshold 8192 out=4096 (raw L9, read-ahead)
+dickens      base   840 head   954 1.14x
+mozilla      base   855 head   968 1.13x
+xml          base  2082 head  2463 1.18x
+text1m.bin   base  1202 head  1515 1.26x
+== threshold 8192 out=8192 (raw L9, read-ahead)
+dickens      base   829 head   810 0.98x
+mozilla      base   878 head   883 1.01x
+xml          base  2130 head  2146 1.01x
+text1m.bin   base  1229 head  1253 1.02x
+== threshold 8192 out=16383 (raw L9, read-ahead)
+dickens      base   872 head   834 0.96x
+mozilla      base   934 head   925 0.99x
+xml          base  2277 head  2209 0.97x
+text1m.bin   base  1274 head  1263 0.99x
+== threshold 16384 out=4096 (raw L9, read-ahead)
+dickens      base   830 head   958 1.15x
+mozilla      base   851 head   968 1.14x
+xml          base  2047 head  2463 1.20x
+text1m.bin   base  1198 head  1436 1.20x
+== threshold 16384 out=8192 (raw L9, read-ahead)
+dickens      base   833 head   956 1.15x
+mozilla      base   880 head   966 1.10x
+xml          base  2104 head  2408 1.14x
+text1m.bin   base  1235 head  1442 1.17x
+== threshold 16384 out=16383 (raw L9, read-ahead)
+dickens      base   863 head   976 1.13x
+mozilla      base   934 head   975 1.04x
+xml          base  2267 head  2485 1.10x
+text1m.bin   base  1287 head  1469 1.14x
+== threshold 32768 out=16383 (raw L9, read-ahead)
+dickens      base   867 head   984 1.13x
+mozilla      base   933 head   974 1.04x
+xml          base  2259 head  2506 1.11x
+text1m.bin   base  1277 head  1483 1.16x
+x-ray        base   558 head   594 1.06x
+== threshold 32768 out=24000 (raw L9, read-ahead)
+dickens      base   879 head   984 1.12x
+mozilla      base   953 head   981 1.03x
+xml          base  2246 head  2541 1.13x
+text1m.bin   base  1301 head  1485 1.14x
+x-ray        base   565 head   600 1.06x
+== threshold 32768 out=32767 (raw L9, read-ahead)
+dickens      base  1008 head   996 0.99x
+mozilla      base   996 head   989 0.99x
+xml          base  2422 head  2559 1.06x
+text1m.bin   base  1547 head  1464 0.95x
+x-ray        base   626 head   607 0.97x
+== threshold 32768 out=40000 (raw L9, read-ahead)
+dickens      base  1069 head  1062 0.99x
+mozilla      base  1019 head  1015 1.00x
+xml          base  2631 head  2604 0.99x
+text1m.bin   base  1591 head  1574 0.99x
+x-ray        base   652 head   655 1.00x
+== threshold 32768 out=65535 (raw L9, read-ahead)
+dickens      base  1169 head  1164 1.00x
+mozilla      base  1055 head  1053 1.00x
+xml          base  2843 head  2843 1.00x
+text1m.bin   base  1733 head  1662 0.96x
+x-ray        base   699 head   690 0.99x
+== threshold 65536 out=16383 (raw L9, read-ahead)
+dickens      base   875 head   978 1.12x
+mozilla      base   935 head   974 1.04x
+xml          base  2266 head  2513 1.11x
+text1m.bin   base  1343 head  1479 1.10x
+x-ray        base   552 head   590 1.07x
+== threshold 65536 out=24000 (raw L9, read-ahead)
+dickens      base   870 head   987 1.13x
+mozilla      base   957 head   980 1.02x
+xml          base  2186 head  2418 1.11x
+text1m.bin   base  1241 head  1487 1.20x
+x-ray        base   566 head   600 1.06x
+== threshold 65536 out=32767 (raw L9, read-ahead)
+dickens      base  1008 head   985 0.98x
+mozilla      base   996 head   988 0.99x
+xml          base  2517 head  2560 1.02x
+text1m.bin   base  1504 head  1547 1.03x
+x-ray        base   624 head   607 0.97x
+== threshold 65536 out=40000 (raw L9, read-ahead)
+dickens      base  1078 head   993 0.92x
+mozilla      base  1023 head   991 0.97x
+xml          base  2640 head  2529 0.96x
+text1m.bin   base  1579 head  1531 0.97x
+x-ray        base   662 head   615 0.93x
+== threshold 65536 out=65535 (raw L9, read-ahead)
+dickens      base  1180 head  1009 0.86x
+mozilla      base  1055 head   996 0.94x
+xml          base  2727 head  2590 0.95x
+text1m.bin   base  1649 head  1411 0.86x
+x-ray        base   698 head   622 0.89x

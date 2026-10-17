@@ -130,13 +130,24 @@ static const config configuration_table[10] = {
 #endif
 
 /* 7 */ {8,   32, 128,  256, deflate_slow},
-/* 8 */ {32, 128, 258, 1024, deflate_slow},
+/* 8 */ {32, 128, 258,  512, deflate_slow},
 /* 9 */ {32, 258, 258, 4096, deflate_slow}}; /* max compression */
 
 /* Note: the deflate() code requires max_lazy >= STD_MIN_MATCH and max_chain >= 4
  * For deflate_fast() (levels <= 3) good is ignored and lazy has a different
  * meaning.
  */
+
+/* Literal-run acceleration per level: misses before it starts, the ramp shift
+ * (the skip grows by one position every 1 << shift further misses), and the
+ * hash insertion stride for skipped positions (0: none, 1: all, k: every k-th).
+ * Higher levels start later, ramp more slowly and keep hashing to protect
+ * their ratio; see deflate_p.h.
+ */
+#ifndef SKIP_TABLE
+#  define SKIP_TABLE {{0,0,0},{64,4,1},{64,4,0},{64,4,0},{64,4,0},{128,5,2},{128,5,2},{256,5,1},{256,5,1},{512,5,1}}
+#endif
+static const struct { uint32_t start, shift, insert; } skip_table[10] = SKIP_TABLE;
 
 /* Level 1 uses deflate_quick, which only reads the hash chain head, so it can
  * skip prev maintenance. When quick is compiled out level 1 falls back to
@@ -1212,6 +1223,10 @@ static void lm_set_level(deflate_state *s, int level) {
             s->insert_batch = insert_knuth_batch;
     }
     s->level = level;
+    /* Literal-run acceleration ramps more slowly at the higher levels */
+    s->skip_start = skip_table[level].start;
+    s->skip_shift = skip_table[level].shift;
+    s->skip_insert = skip_table[level].insert;
 }
 
 /* ===========================================================================
@@ -1236,6 +1251,7 @@ static void lm_init(deflate_state *s) {
     s->match_available = 0;
     s->match_start = 0;
     s->ins_h = 0;
+    s->miss_run = 0;
 }
 
 /* ===========================================================================
@@ -1248,6 +1264,39 @@ static void lm_init(deflate_state *s) {
  *    performed for at least two bytes (required for the zip translate_eol
  *    option -- not supported here).
  */
+
+/* ===========================================================================
+ * Hash every stride-th position of a stretch the strategy skipped, see
+ * deflate_p.h.
+ */
+void Z_INTERNAL zng_deflate_insert_stride(deflate_state *s, unsigned char *window, uint32_t start, uint32_t n, uint32_t stride) {
+    Pos *head = s->head;
+    Pos *prev = s->prev;
+    const uint32_t w_mask = W_MASK(s);
+    if (n < STD_MIN_MATCH)
+        return;
+    if (s->level >= MIN_ROLL_LEVEL) {
+        for (uint32_t pos = start; pos + STD_MIN_MATCH <= start + n; pos += stride) {
+            uint32_t h = update_hash_roll(update_hash_roll(window[pos], window[pos + 1]), window[pos + 2]);
+            uint32_t hh = head[h];
+            if (hh != pos) {
+                prev[pos & w_mask] = (Pos)hh;
+                head[h] = (Pos)pos;
+            }
+        }
+    } else {
+        for (uint32_t pos = start; pos + WANT_MIN_MATCH <= start + n; pos += stride) {
+            uint32_t val = Z_U32_FROM_LE(zng_memread_4(window + pos));
+            uint32_t h, hh;
+            UPDATE_HASH_KNUTH(h, val);
+            hh = head[h];
+            if (hh != pos) {
+                prev[pos & w_mask] = (Pos)hh;
+                head[h] = (Pos)pos;
+            }
+        }
+    }
+}
 
 void Z_INTERNAL PREFIX(fill_window)(deflate_state *s) {
     PREFIX3(stream) *strm = s->strm;

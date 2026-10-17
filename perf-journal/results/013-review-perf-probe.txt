@@ -1,0 +1,21 @@
+# reviewer probe p_perf2 (8 MB text, level 6, min of 15): head after review fixes vs baseline
+head:
+stream B=64: 1.483 ns/B (12.44 ms)
+stream B=4096: 1.333 ns/B (11.18 ms)
+stream B=16384: 1.313 ns/B (11.01 ms)
+stream B=24575: 1.295 ns/B (10.87 ms)
+stream B=24576: 1.387 ns/B (11.63 ms)
+stream B=32768: 1.285 ns/B (10.78 ms)
+stream B=49152: 1.195 ns/B (10.03 ms)
+stream B=65536: 1.157 ns/B (9.70 ms)
+stream B=1048576: 1.078 ns/B (9.04 ms)
+base:
+stream B=64: 2.189 ns/B (18.36 ms)
+stream B=4096: 1.360 ns/B (11.41 ms)
+stream B=16384: 1.349 ns/B (11.32 ms)
+stream B=24575: 1.364 ns/B (11.44 ms)
+stream B=24576: 1.362 ns/B (11.43 ms)
+stream B=32768: 1.242 ns/B (10.42 ms)
+stream B=49152: 1.184 ns/B (9.93 ms)
+stream B=65536: 1.156 ns/B (9.70 ms)
+stream B=1048576: 1.068 ns/B (8.96 ms)

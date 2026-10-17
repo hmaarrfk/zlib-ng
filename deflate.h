@@ -343,8 +343,14 @@ struct ALIGNED_(64) internal_state {
     longest_match_func longest_match;
     insert_batch_func insert_batch;
 
+    /* Literal-run acceleration, see SKIP_STEP in deflate_p.h */
+    uint32_t miss_run;          /* consecutive positions searched without finding a match */
+    uint32_t skip_start;        /* misses before the acceleration starts, set by lm_set_level() */
+    uint32_t skip_shift;        /* ramp of the acceleration, set by lm_set_level() */
+    uint32_t skip_insert;       /* hash every skip_insert-th skipped position (0: none) */
+
     /* Reserved for future use and alignment purposes */
-    int32_t reserved[20];
+    int32_t reserved[16];
 };
 
 typedef enum {
