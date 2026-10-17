@@ -218,3 +218,37 @@ TEST(inflate_window, dictionary_then_finish) {
         }
     }
 }
+
+/* gzread and libpng never call inflate() with avail_in == 0: they read more input first and
+   treat end of input without Z_STREAM_END as a truncated stream. Pending output must therefore
+   never coincide with avail_in == 0. */
+TEST(inflate_window, pending_output_keeps_input) {
+    std::vector<match_op> ops;
+    for (int i = 0; i < 500; i++) ops.push_back({3 + (i % 250), 1 + (i * 37) % 30000});
+    std::vector<uint8_t> stream, expected;
+    build_stream(30000, ops, stream, expected);
+    for (int wbits : {-15}) {
+        for (uint32_t chunk : {1u, 64u, 300u, 4095u}) {
+            std::vector<uint8_t> out(expected.size(), 0);
+            PREFIX3(stream) s;
+            memset(&s, 0, sizeof(s));
+            ASSERT_EQ(PREFIX(inflateInit2)(&s, wbits), Z_OK);
+            s.next_in = (z_const unsigned char *)stream.data();
+            s.avail_in = (uint32_t)stream.size();
+            s.next_out = out.data();
+            s.avail_out = chunk;
+            int ret;
+            for (;;) {
+                ASSERT_NE(s.avail_in, 0u) << "input exhausted before Z_STREAM_END, chunk " << chunk << " total_out " << s.total_out;
+                ret = PREFIX(inflate)(&s, Z_NO_FLUSH);
+                if (ret == Z_STREAM_END) break;
+                ASSERT_EQ(ret, Z_OK);
+                if (s.avail_out == 0)
+                    s.avail_out = (uint32_t)MIN((size_t)chunk, expected.size() - s.total_out);
+            }
+            ASSERT_EQ(PREFIX(inflateEnd)(&s), Z_OK);
+            EXPECT_EQ(s.total_out, expected.size());
+            EXPECT_EQ(memcmp(out.data(), expected.data(), expected.size()), 0);
+        }
+    }
+}

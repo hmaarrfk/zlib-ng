@@ -24,7 +24,7 @@ static int inflateStateCheck(PREFIX3(stream) *strm);
 static void updatewindow(PREFIX3(stream) *strm, const uint8_t *end, uint32_t len, int32_t cksum);
 static uint32_t syncsearch(uint32_t *have, const unsigned char *buf, uint32_t len);
 
-#define INFLATE_WINDOW_DECODE_MAX 4096
+#define INFLATE_WINDOW_DECODE_MAX 24576
 #ifndef S390_DFLTCC_INFLATE
 #  define INFLATE_WINDOW_GAP 512
 #else
@@ -397,13 +397,16 @@ static void updatewindow(PREFIX3(stream) *strm, const uint8_t *end, uint32_t len
 /* In-window decoding. When the caller's output buffer is small, inflate()
    decodes into the sliding window itself (at window + wnext) and copies the
    result to the caller, instead of running the end-of-buffer safe loop and
-   copying every byte into the window on each return. The decode is bounded
-   by the caller's avail_out exactly as before, except that the fast loop may
-   finish the symbol that crosses the end (at most 257 bytes); those bytes
-   wait in the window, counted in state->wpend, and are delivered first by
-   the next call. Input is therefore never consumed ahead of the output the
-   caller has room for, beyond that one symbol, so callers that treat
-   "avail_in == 0 and no Z_STREAM_END" as a truncated stream keep working.
+   copying every byte into the window on each return. The fast loop runs
+   to the window's end, so output is decoded ahead of what the caller has
+   room for; the surplus waits in the window, counted in state->wpend, and
+   is delivered first by the next call (pending output always comes with
+   avail_out == 0). The fast loop holds one input byte back while it runs
+   ahead, so pending output never coincides with avail_in == 0, which keeps
+   callers working that treat "input exhausted without Z_STREAM_END" as a
+   truncated stream. The byte-at-a-time path never runs ahead. total_in
+   and the window therefore lead total_out by up to a window of output
+   while bytes are pending; Z_BLOCK and Z_TREES calls decode directly.
 
    The chunked copies write up to 258 bytes past the token they copy. In the
    caller's buffer that is harmless; in a circular window those slots hold
@@ -1037,17 +1040,22 @@ int32_t Z_EXPORT PREFIX(inflate)(PREFIX3(stream) *strm, int32_t flush) {
             if (have >= INFLATE_FAST_MIN_HAVE && left >= INFLATE_FAST_MIN_SAFE) {
                 RESTORE();
                 if (win) {
-                    /* Lend the fast loop the room after the caller's share so it
-                       runs at full speed up to the caller's limit; the symbol that
-                       crosses the limit is kept pending. */
-                    uint32_t room = (uint32_t)(state->window + state->wsize - put);
-                    uint32_t cap = MIN(room, left + (INFLATE_FAST_MIN_LEFT - 1));
+                    /* Let the fast loop run to the window's end, past the caller's
+                       share; what it decodes beyond that waits in the window for
+                       the next call. One input byte is held back so that pending
+                       output always comes with avail_in != 0: callers that treat
+                       "input exhausted without Z_STREAM_END" as a truncated stream
+                       therefore never see pending output as the end of the data. */
+                    uint32_t cap = (uint32_t)(state->window + state->wsize - put);
                     uint32_t done = out - left;      /* produced so far this call */
+                    uint32_t reserve = have > INFLATE_FAST_MIN_HAVE ? 1 : 0;
                     strm->avail_out = cap;
+                    strm->avail_in -= reserve;
                     if (LIKELY(cap >= INFLATE_FAST_MIN_LEFT))
                         FUNCTABLE_CALL(inflate_fast)(strm, cap + done);
                     else
                         FUNCTABLE_CALL(inflate_fast_safe)(strm, cap + done);
+                    strm->avail_in += reserve;
                     uint32_t produced = cap - strm->avail_out;
                     if (produced > left) {
                         over = produced - left;
@@ -1065,7 +1073,7 @@ int32_t Z_EXPORT PREFIX(inflate)(PREFIX3(stream) *strm, int32_t flush) {
                 if (state->mode == TYPE)
                     state->back = -1;
                 if (over)
-                    goto inf_leave;     /* caller's room is used up; the overshoot waits in the window */
+                    goto inf_leave;     /* caller's room is used up; the rest waits in the window */
                 break;
             }
             state->back = 0;
@@ -1432,9 +1440,12 @@ int32_t Z_EXPORT PREFIX(inflateSetDictionary)(PREFIX3(stream) *strm, const uint8
     /* copy dictionary to window using updatewindow(), which will amend the
        existing dictionary if appropriate; output decoded but not yet
        delivered (raw streams allow this at any time) is kept behind it */
-    unsigned char pend[INFLATE_FAST_MIN_LEFT];
+    unsigned char *pend = NULL;
     uint32_t npend = state->wpend;
     if (npend) {
+        pend = (unsigned char *)strm->zalloc(strm->opaque, 1, npend);
+        if (pend == NULL)
+            return Z_MEM_ERROR;
         uint32_t start = state->wnext >= npend ? state->wnext - npend : state->wnext + state->wsize - npend;
         uint32_t first = MIN(npend, state->wsize - start);
         memcpy(pend, state->window + start, first);
@@ -1445,6 +1456,7 @@ int32_t Z_EXPORT PREFIX(inflateSetDictionary)(PREFIX3(stream) *strm, const uint8
     if (npend) {
         updatewindow(strm, pend + npend, npend, 0);
         state->wpend = npend;
+        strm->zfree(strm->opaque, pend);
     }
 
     state->havedict = 1;
