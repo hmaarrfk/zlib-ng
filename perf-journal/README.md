@@ -491,3 +491,38 @@ behind it from 32 KiB.
 gzip-wrapped streams gain the same (the checksum is fused into the copy).
 The remaining gap to whole-buffer speed at 64 bytes (dickens 879 vs 1376
 MB/s) is the per-call entry and exit of `inflate()` plus a 64-byte copy.
+
+Second adversarial review (of the committed read-ahead) found three more
+problems, each reproduced with a differential probe against the baseline
+library on identical compressed bytes (2880 traces of data kind x wrapper x
+input chunking x output chunking x flush mode):
+
+1. **Blocker.** When pending bytes drained exactly into the caller's buffer,
+   the call fell through with `avail_out == 0` and the direct path's
+   no-progress test reported Z_BUF_ERROR although bytes had just been
+   delivered. libpng treats that as a fatal error and Java's Inflater drops
+   the delivered bytes. Fixed (the test counts delivered bytes); a new gtest
+   runs fixed-size buffers over a long stream and checks `strm->adler`
+   against the delivered bytes on every return.
+2. TYPE was turned into TYPEDO before the pending drain, so a Z_BLOCK call
+   after a small-buffer call skipped the block boundary at the end of the
+   pending output. Fixed; a gtest counts boundaries against the baseline's.
+3. The continuation at the window's end required input, so a segment ending
+   inside a match could return short with `avail_out > 0`. Fixed.
+
+Plus two notes acted on: the one-byte input reserve was provably redundant
+(the fast loops always leave an unloaded input byte; removed), and a
+32 KiB direct-mode call had lost updatewindow's single-copy path because the
+circular window is now 33280 bytes (+6%; fixed by placing the last 32 KiB
+so that the write index wraps to 0). After the fixes the reviewer's probe
+(`results/013-review-perf-probe.txt`, 8 MB text, level 6, ns per byte)
+reads 1.48 vs 2.23 at 64-byte buffers, 1.33 vs 1.42 at 4 KiB, 1.30 vs 1.38
+at 24 KiB, 1.25 vs 1.27 at 32 KiB and 1.16 vs 1.19 at 64 KiB.
+
+What remains observable: `total_in`, `inflateGetDictionary` and the low
+bits of `data_type` run ahead of `total_out` while bytes are pending in
+non-Z_BLOCK streaming; a program that records those from a non-Z_BLOCK
+call to build a random-access index would be off by up to a window. The
+known indexers (zran, gztool, indexed_gzip) use Z_BLOCK, which decodes
+directly. `inflateSetDictionary` with pending output now returns
+Z_STREAM_ERROR rather than placing the dictionary behind undelivered bytes.
